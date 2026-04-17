@@ -1,0 +1,4 @@
+bot.log
+bot.send
+__pycache__/
+*.pyc
