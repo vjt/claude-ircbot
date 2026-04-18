@@ -12,6 +12,7 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     RAW <irc line>          -> send as-is
     JOIN <chan> / PART <chan> / WHOIS <nick> / QUIT [reason]
 """
+import fnmatch
 import os
 import re
 import socket
@@ -25,11 +26,18 @@ PORT = 6697
 NICK = "vjt-claude"
 IDENT = "claude"
 REAL = "Claude Code PoC (vjt)"
-TRUSTED = "vjt"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "bot.log")
 FIFO = os.path.join(HERE, "bot.send")
+TRUST_FILE = os.path.join(HERE, "bot.trust")
+
+# Trust state: nick must be in trust_rules, host must match the nick's glob,
+# AND we must have received RPL_WHOISREGNICK (307) confirming the nick is
+# registered+identified to services. Cache reset on PART/QUIT/NICK.
+trust_rules = []  # list of (nick_lower, host_glob)
+verified = set()  # lowercase nicks confirmed via 307
+whois_pending = set()  # lowercase nicks we WHOIS'd, awaiting 307/318
 
 # IRC line limit is 512 incl CRLF. Body safe ~400.
 MAX_BODY = 400
@@ -40,6 +48,63 @@ send_lock = threading.Lock()
 
 def emit(kind, *parts):
     print(kind + " " + " ".join(str(p) for p in parts), flush=True)
+
+
+def load_trust():
+    global trust_rules
+    out = []
+    try:
+        with open(TRUST_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    out.append((parts[0].lower(), parts[1]))
+    except FileNotFoundError:
+        pass
+    trust_rules = out
+    emit("TRUST_LOADED", len(trust_rules))
+
+
+def is_trust_listed(nick):
+    n = nick.lower()
+    return any(tn == n for tn, _ in trust_rules)
+
+
+def host_matches(nick, host):
+    n = nick.lower()
+    for tn, hg in trust_rules:
+        if tn == n and fnmatch.fnmatch(host, hg):
+            return True
+    return False
+
+
+def trust_check(nick, host):
+    """Evaluate (trusted_bool, reason). Fires WHOIS on first sighting
+    of a trust-listed nick. Trust requires: listed, host glob match,
+    AND registered (307 seen). Anything less => untrusted."""
+    n = nick.lower()
+    if not is_trust_listed(n):
+        return (False, "not-listed")
+    if not host_matches(n, host):
+        return (False, "host-mismatch")
+    if n not in verified:
+        if n not in whois_pending:
+            whois_pending.add(n)
+            send_raw(f"WHOIS {nick}")
+            emit("WHOIS_FIRED", nick)
+        return (False, "pending-whois")
+    return (True, "ok")
+
+
+def trust_reset(nick, reason):
+    n = nick.lower()
+    if n in verified or n in whois_pending:
+        verified.discard(n)
+        whois_pending.discard(n)
+        emit("TRUST_RESET", nick, reason)
 
 
 def log(direction, line):
@@ -98,12 +163,35 @@ def handle_server_line(line):
 
     if cmd == "001":
         emit("CONNECTED", NICK)
+        for tn, _ in trust_rules:
+            whois_pending.add(tn)
+            send_raw(f"WHOIS {tn}")
+            emit("WHOIS_FIRED", tn)
         return
     if cmd in ("433", "432", "437"):
         emit("NICK_ERROR", cmd, rest)
         return
     if cmd in ("464", "465"):
         emit("AUTH_ERROR", cmd, rest)
+        return
+    if cmd == "307":
+        # RPL_WHOISREGNICK: ":server 307 <me> <target> :has identified for this nick"
+        parts = rest.split()
+        if len(parts) >= 2:
+            target = parts[1].lower()
+            verified.add(target)
+            whois_pending.discard(target)
+            emit("VERIFIED", parts[1])
+        return
+    if cmd == "318":
+        # RPL_ENDOFWHOIS: if nick was pending and not verified => not registered
+        parts = rest.split()
+        if len(parts) >= 2:
+            target = parts[1].lower()
+            if target in whois_pending:
+                whois_pending.discard(target)
+                if target not in verified:
+                    emit("NOT_REGISTERED", parts[1])
         return
     if cmd == "NOTICE":
         parts = rest.split(" :", 1)
@@ -115,8 +203,10 @@ def handle_server_line(line):
     if cmd == "INVITE":
         parts = rest.split(" :", 1)
         target_chan = parts[1] if len(parts) == 2 else rest.split()[-1]
-        emit("INVITE", nick, target_chan)
-        if nick == TRUSTED:
+        host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
+        trusted, reason = trust_check(nick, host)
+        emit("INVITE", nick, target_chan, "trusted" if trusted else f"untrusted:{reason}")
+        if trusted:
             send_raw(f"JOIN {target_chan}")
         return
     if cmd == "KICK":
@@ -134,20 +224,28 @@ def handle_server_line(line):
             elif ctcp.upper().startswith("PING"):
                 send_raw(f"NOTICE {nick} :\x01{ctcp}\x01")
             return
-        trust = "vjt" if nick == TRUSTED else "other"
+        host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
+        trusted, reason = trust_check(nick, host)
+        trust = nick if trusted else "other"
         emit("MSG", trust, nick, target, body)
+        if is_trust_listed(nick) and not trusted:
+            emit("TRUST_DENIED", nick, host, reason)
         return
     if cmd == "JOIN":
         emit("JOIN", nick, rest.lstrip(":"))
         return
     if cmd == "PART":
         emit("PART", nick, rest)
+        trust_reset(nick, "part")
         return
     if cmd == "QUIT":
         emit("QUIT", nick, rest)
+        trust_reset(nick, "quit")
         return
     if cmd == "NICK":
-        emit("NICK_CHANGE", nick, rest.lstrip(":"))
+        new_nick = rest.lstrip(":")
+        emit("NICK_CHANGE", nick, new_nick)
+        trust_reset(nick, "nick-change")
         return
     if cmd == "ERROR":
         emit("SERVER_ERROR", rest)
@@ -230,6 +328,7 @@ def process_cmd(line):
 
 def main():
     global sock
+    load_trust()
     ctx = ssl.create_default_context()
     raw = socket.create_connection((HOST, PORT), timeout=30)
     sock = ctx.wrap_socket(raw, server_hostname=HOST)
