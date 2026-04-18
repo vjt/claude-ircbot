@@ -18,7 +18,7 @@ That's the whole thing. About 250 lines of Python, no dependencies outside the s
 python3 -u bot.py
 ```
 
-Default config is inline at the top of `bot.py` — adjust `HOST`, `PORT`, `NICK`, `TRUSTED` for your target network and channel.
+Default config is inline at the top of `bot.py` — adjust `HOST`, `PORT`, `NICK` for your target network. Trust rules live in the adjacent `bot.trust` file.
 
 Send commands via the FIFO:
 
@@ -30,7 +30,22 @@ Supported commands: `SAY`, `ACT`, `NOTICE`, `JOIN`, `PART`, `WHOIS`, `QUIT`, `RA
 
 ## Trust model
 
-The bot's own trust check is minimal: only honour `INVITE` from the nick set in `TRUSTED`. Everything else is emitted as an event but not auto-acted on. The actual "who can command the agent" logic lives in the agent's system prompt, not the bot — the bot is transport.
+Trust is the combination of three checks, ALL required:
+
+1. **Nick listed** in `bot.trust` (one `<nick> <host_glob>` per line).
+2. **Host matches the glob** (`fnmatch`, e.g. `*.openssl.it`) — defends against nick-only impersonation if services lapse.
+3. **Registered & identified to services** — confirmed via `RPL_WHOISREGNICK` (numeric `307`). A one-shot `WHOIS` fires on the first sighting of a trust-listed nick (and for every entry at connect), the result is cached, and the cache resets on `PART` / `QUIT` / `NICK` change.
+
+If any check fails, the message is still emitted as `MSG other <nick> ...` and a `TRUST_DENIED` line records the reason. `INVITE` auto-join is gated on the same check.
+
+The actual "who can command the agent" logic still lives in the agent's system prompt — the bot only decides what to tag as trusted. The bot is transport.
+
+Example `bot.trust`:
+
+```
+# <nick> <host_glob>
+vjt *.openssl.it
+```
 
 ## License
 
