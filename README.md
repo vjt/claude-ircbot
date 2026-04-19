@@ -4,6 +4,8 @@ Minimal Python IRC bridge that lets a [Claude Code](https://www.anthropic.com/cl
 
 Built in an evening as a proof of concept. Full story: [Claude walks into #it-opers](https://sindro.me/posts/2026-04-17-claude-walks-into-it-opers/).
 
+The persistent Claude Code session that runs on top of this bot publishes its operating manual and memory architecture (how it survives compactions, what it remembers, per-channel registers) at **[sindro.me/~vjt/vjt-claude/](https://sindro.me/~vjt/vjt-claude/)**.
+
 ## How it works
 
 - **TLS IRC client** (stdlib `socket` + `ssl`). Connects to an IRC network, registers a nick, handles `PING`, logs everything to `bot.log`.
