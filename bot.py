@@ -14,6 +14,7 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
 """
 import fnmatch
 import os
+import random
 import re
 import socket
 import ssl
@@ -66,6 +67,46 @@ MAX_BODY = 400
 
 sock = None
 send_lock = threading.Lock()
+
+# Idle-tick config: per-channel random cooldown (seconds) after the last
+# HUMAN PRIVMSG. When elapsed, bot emits `IDLE <chan>` exactly once, then
+# disarms. Next human PRIVMSG re-arms with a fresh random cooldown.
+# Our own outgoing messages do NOT reset the timer.
+IDLE_RANGES = {
+    "#sniffo": (5 * 60, 20 * 60),
+    "#olografix": (10 * 60, 40 * 60),
+    "#it-opers": (30 * 60, 90 * 60),
+}
+# state[chan_lower] = fire_at (monotonic) or None if disarmed
+idle_state: dict[str, float | None] = {c.lower(): None for c in IDLE_RANGES}
+idle_lock = threading.Lock()
+
+
+def _arm_idle(chan: str) -> None:
+    key = chan.lower()
+    rng = IDLE_RANGES.get(key)
+    if not rng:
+        return
+    lo, hi = rng
+    delay = random.uniform(lo, hi)
+    with idle_lock:
+        idle_state[key] = time.monotonic() + delay
+
+
+def idle_ticker_loop() -> None:
+    while True:
+        time.sleep(10)
+        now = time.monotonic()
+        fired = []
+        with idle_lock:
+            for chan, fire_at in list(idle_state.items()):
+                if fire_at is not None and now >= fire_at:
+                    idle_state[chan] = None
+                    fired.append(chan)
+        for chan in fired:
+            emit("IDLE", chan)
+            # also to bot.log so Monitor tails pick it up alongside IRC traffic
+            log("*", f"IDLE {chan}")
 
 
 def emit(kind, *parts):
@@ -299,6 +340,10 @@ def handle_server_line(line):
         emit("MSG", trust, nick, target, body)
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
+        # Re-arm the idle timer only on HUMAN PRIVMSG to a tracked channel.
+        # Our own outgoing messages don't reach this path.
+        if target.startswith("#") and nick.lower() != NICK.lower():
+            _arm_idle(target)
         return
     if cmd == "JOIN":
         emit("JOIN", nick, rest.lstrip(":"))
@@ -407,6 +452,7 @@ def main():
     send_raw(f"USER {IDENT} 0 * :{REAL}")
 
     threading.Thread(target=writer_loop, daemon=True).start()
+    threading.Thread(target=idle_ticker_loop, daemon=True).start()
     reader_loop()
 
 
