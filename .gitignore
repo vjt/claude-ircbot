@@ -1,4 +1,10 @@
 bot.log
 bot.send
+.env
+bot.startup
+bot.stdout.log
+aup_watchdog.log
+roll_counter.log
+rolls.json
 __pycache__/
 *.pyc
