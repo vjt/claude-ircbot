@@ -81,6 +81,12 @@ IDLE_RANGES = {
 idle_state: dict[str, float | None] = {c.lower(): None for c in IDLE_RANGES}
 idle_lock = threading.Lock()
 
+# Rolling kick history per channel (monotonic timestamps). If > KICK_MAX in KICK_WINDOW, give up rejoin.
+kick_history: dict[str, list[float]] = {}
+kick_lock = threading.Lock()
+KICK_WINDOW = 60.0
+KICK_MAX = 3
+
 
 def _arm_idle(chan: str) -> None:
     key = chan.lower()
@@ -320,7 +326,31 @@ def handle_server_line(line):
             send_raw(f"JOIN {target_chan}")
         return
     if cmd == "KICK":
-        emit("KICK", nick, rest)
+        # rest = "#chan target[ :reason]"
+        kick_parts = rest.split(" :", 1)
+        head = kick_parts[0].split()
+        kick_chan = head[0] if head else ""
+        kick_target = head[1] if len(head) > 1 else ""
+        kick_reason = kick_parts[1] if len(kick_parts) > 1 else ""
+        emit("KICK", nick, kick_chan, kick_target, kick_reason)
+        if kick_chan and kick_target.lower() == NICK.lower():
+            # Auto-rejoin with kick-flood backoff. Repeated kicks in a short
+            # window = a hostile op. Walk away rather than trigger Excess Flood.
+            now = time.monotonic()
+            key = kick_chan.lower()
+            with kick_lock:
+                history = [t for t in kick_history.get(key, []) if now - t < KICK_WINDOW]
+                history.append(now)
+                kick_history[key] = history
+                count = len(history)
+            if count > KICK_MAX:
+                emit("KICK_GIVEUP", kick_chan, nick, f"{count} kicks in {KICK_WINDOW}s")
+            else:
+                def _rejoin(ch: str = kick_chan) -> None:
+                    send_raw(f"PRIVMSG ChanServ :INVITE {ch}")
+                    threading.Timer(0.5, lambda: send_raw(f"JOIN {ch}")).start()
+                threading.Timer(2.0, _rejoin).start()
+                emit("KICK_REJOIN", kick_chan, nick, f"{count}/{KICK_MAX}")
         return
     if cmd == "PRIVMSG":
         parts = rest.split(" :", 1)
