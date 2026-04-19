@@ -31,6 +31,28 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "bot.log")
 FIFO = os.path.join(HERE, "bot.send")
 TRUST_FILE = os.path.join(HERE, "bot.trust")
+ENV_FILE = os.path.join(HERE, ".env")
+STARTUP_FILE = os.path.join(HERE, "bot.startup")
+
+
+def load_env():
+    out = {}
+    try:
+        with open(ENV_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+ENV = load_env()
+NICKSERV_PASS = ENV.get("NICKSERV_PASS") or os.environ.get("NICKSERV_PASS") or ""
+startup_fired = False
 
 # Trust state: nick must be in trust_rules, host must match the nick's glob,
 # AND we must have received RPL_WHOISREGNICK (307) confirming the nick is
@@ -107,10 +129,16 @@ def trust_reset(nick, reason):
         emit("TRUST_RESET", nick, reason)
 
 
+def _mask_secrets(line):
+    if NICKSERV_PASS and NICKSERV_PASS in line:
+        return line.replace(NICKSERV_PASS, "********")
+    return line
+
+
 def log(direction, line):
     try:
         with open(LOG, "a") as f:
-            f.write(f"{time.strftime('%H:%M:%S')} {direction} {line}\n")
+            f.write(f"{time.strftime('%H:%M:%S')} {direction} {_mask_secrets(line)}\n")
     except Exception:
         pass
 
@@ -148,6 +176,36 @@ def split_say(target, text):
         send_raw(f"PRIVMSG {target} :{chunk}")
 
 
+def run_startup():
+    try:
+        with open(STARTUP_FILE) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        emit("STARTUP_DONE", "no-file")
+        return
+    count = 0
+    for raw in lines:
+        line = raw.rstrip("\r\n").strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            process_cmd(line)
+            count += 1
+        except Exception as e:
+            emit("ERROR", "startup-fail", repr(e), line[:80])
+        time.sleep(0.5)
+    emit("STARTUP_DONE", count)
+
+
+def fire_startup(reason):
+    global startup_fired
+    if startup_fired:
+        return
+    startup_fired = True
+    emit("STARTUP_FIRED", reason)
+    threading.Thread(target=run_startup, daemon=True).start()
+
+
 def handle_server_line(line):
     log("<", line)
     if line.startswith("PING "):
@@ -167,6 +225,11 @@ def handle_server_line(line):
             whois_pending.add(tn)
             send_raw(f"WHOIS {tn}")
             emit("WHOIS_FIRED", tn)
+        if NICKSERV_PASS:
+            send_raw(f"PRIVMSG NickServ :IDENTIFY {NICKSERV_PASS}")
+            emit("NS_IDENTIFY_SENT")
+        else:
+            fire_startup("no-nickserv-pass")
         return
     if cmd in ("433", "432", "437"):
         emit("NICK_ERROR", cmd, rest)
@@ -197,6 +260,12 @@ def handle_server_line(line):
         parts = rest.split(" :", 1)
         tgt = parts[0]
         msg = parts[1] if len(parts) > 1 else ""
+        if nick.lower() == "nickserv" and NICKSERV_PASS:
+            low = msg.lower()
+            if any(k in low for k in ("identified", "accepted", "recognized", "riconosciuto", "autenticato", "accettata", "identificato")):
+                fire_startup("nickserv-ok")
+            elif any(k in low for k in ("incorrect", "invalid", "failed", "errata", "errato")):
+                emit("NS_IDENTIFY_FAIL", msg)
         if nick and nick.lower() != NICK.lower():
             emit("NOTICE", nick, tgt, msg)
         return
