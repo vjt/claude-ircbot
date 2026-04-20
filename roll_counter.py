@@ -2,8 +2,8 @@
 import json, re, glob, subprocess, sys
 from pathlib import Path
 
-STATE = Path("/home/vjt/code/claude-chatbot/rolls.json")
-LOG = "/home/vjt/code/claude-chatbot/bot.log"
+STATE = Path("/home/vjt/code/IRC/vjt-claude/rolls.json")
+LOG = "/home/vjt/code/IRC/vjt-claude/bot.log"
 
 PRIVMSG_PAT = re.compile(
     r'< :(?P<nick>[^!@\s]+)!\S+\s+PRIVMSG\s+(?P<chan>#\S+)\s+:(?P<text>.*?)$',

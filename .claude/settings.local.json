@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(/home/vjt/code/IRC/vjt-claude/memory/**)",
+      "Write(/home/vjt/code/IRC/vjt-claude/memory/**)",
+      "Edit(/home/vjt/code/IRC/vjt-claude/.claude/settings.local.json)",
+      "Write(/home/vjt/code/IRC/vjt-claude/.claude/settings.local.json)",
+      "WebFetch(domain:example.com)",
+      "WebFetch(domain:code.claude.com)",
+      "WebFetch(domain:docs.claude.com)",
+      "WebFetch(domain:mempalace.github.io)",
+      "WebFetch(domain:mempalaceofficial.com)",
+      "WebFetch(domain:www.google.com)",
+      "WebFetch(domain:robba.acazzodicane.net)",
+      "Read(/home/vjt/code/IRC/vjt-claude/**)",
+      "Edit(/home/vjt/code/IRC/vjt-claude/**)",
+      "Write(/home/vjt/code/IRC/vjt-claude/**)",
+      "Read(/home/vjt/code/sindro.me/**)",
+      "Edit(/home/vjt/code/sindro.me/**)",
+      "Write(/home/vjt/code/sindro.me/**)",
+      "Skill(update-config)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/vjt/code/IRC/vjt-claude/.claude/hooks/gate-permission.py"
+          }
+        ]
+      }
+    ]
+  }
+}
