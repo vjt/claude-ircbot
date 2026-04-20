@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """PreToolUse gate — wholesale.
 
-Fires on every tool (matcher `*` in settings.local.json). Allow-list lives in
-.claude/settings.local.json `permissions.allow`. No match → fast deny + IRC
-NOTICE to vjt so a blocked call surfaces on IRC instead of CC's silent prompt.
+Fires on every tool (matcher `*` wired in .claude/settings.json). Allow-list
+is the union of `permissions.allow` from both `.claude/settings.json`
+(checked-in, generic rules) and `.claude/settings.local.json` (gitignored,
+host-specific paths + WebFetch domains). No match → fast deny + IRC NOTICE
+to vjt so a blocked call surfaces on IRC instead of CC's silent prompt.
 
 Allow-rule grammar (superset of CC native):
     <Tool>                          — bare = any use
@@ -24,8 +26,19 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-SETTINGS = Path("/home/vjt/code/IRC/vjt-claude/.claude/settings.local.json")
-BOT_FIFO = Path("/home/vjt/code/IRC/vjt-claude/bot.send")
+HERE = Path(__file__).resolve().parent.parent  # .../.claude/
+SETTINGS_FILES = [HERE / "settings.json", HERE / "settings.local.json"]
+BOT_FIFO = HERE.parent / "bot.send"
+
+
+def load_allow():
+    out = []
+    for p in SETTINGS_FILES:
+        try:
+            out.extend(json.loads(p.read_text()).get("permissions", {}).get("allow", []))
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return out
 
 
 def notify(text):
@@ -97,11 +110,7 @@ def main():
         sys.exit(0)
     tool = data.get("tool_name", "")
     tool_input = data.get("tool_input", {}) or {}
-    try:
-        allow = json.loads(SETTINGS.read_text()).get("permissions", {}).get("allow", [])
-    except Exception:
-        allow = []
-    for rule in allow:
+    for rule in load_allow():
         if rule_matches(rule, tool, tool_input):
             sys.exit(0)
 
