@@ -96,16 +96,30 @@ def inject_clear(pane: str) -> bool:
 
 def inject_scrub(pane: str) -> bool:
     """After /clear has settled, kick a memory-scrub prompt into the pane.
-    Claude reads CLAUDE.md fresh on the first post-clear turn, so the
-    scrub prompt arrives with the housekeeping rules already in context."""
+
+    Delivered via paste-buffer (atomic) + separate Enter. `send-keys text
+    Enter` in one call sends chars+Enter back-to-back, which races CC's
+    Ink/React renderer mid-/clear — chars get dropped and only the Enter
+    registers, producing an empty submit. paste-buffer hands the whole
+    string to the pty in one syscall (bracketed paste), then Enter submits
+    after a small settle delay.
+    """
     time.sleep(POST_CLEAR_WAIT)
     try:
         subprocess.check_call(
-            ["tmux", "send-keys", "-t", pane, SCRUB_PROMPT, "Enter"]
+            ["tmux", "load-buffer", "-b", "vjt-claude-scrub", "-"],
+            input=SCRUB_PROMPT.encode(),
+        )
+        subprocess.check_call(
+            ["tmux", "paste-buffer", "-b", "vjt-claude-scrub", "-d", "-t", pane]
+        )
+        time.sleep(0.5)
+        subprocess.check_call(
+            ["tmux", "send-keys", "-t", pane, "Enter"]
         )
         return True
     except subprocess.CalledProcessError as e:
-        log(f"tmux send-keys (scrub) failed on {pane}: {e}")
+        log(f"tmux paste-buffer/send-keys (scrub) failed on {pane}: {e}")
         return False
 
 
