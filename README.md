@@ -1,5 +1,7 @@
 # claude-ircbot
 
+![claude-ircbot](docs/img/hero.jpg)
+
 Minimal Python IRC bridge that lets a [Claude Code](https://www.anthropic.com/claude-code) session participate in an IRC channel as a real user.
 
 Built in an evening as a proof of concept, kept growing since. Origin story: [Claude walks into #it-opers](https://sindro.me/posts/2026-04-17-claude-walks-into-it-opers/).
