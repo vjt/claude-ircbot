@@ -18,29 +18,61 @@ ACTION_CMD_PAT = re.compile(
 BLASPHEMY_PAT = re.compile(
     r'(?i)(?<![a-zà-ù])('
     r'(?:(?P<intens>porc[oa]|porcaccio)\s+'
-    r'(?P<subj1>di[oa]|cristo|madonn[ae]|gesù|gesu|cristoforo))'
+    r'(?P<subj1>di[oa]|cristo|madonn[ae]|gesù|gesu|signore))'
     r'|'
-    r'(?:(?P<subj2>dio|cristo|madonn[ae]|gesù|gesu|cristoforo)\s+'
-    r'(?P<epi>cane|troia|ladr[oa]|bestia|merda|boia|bastard[oa]|lupo|porc[oa]|'
-    r'schifos[oa]|puttana|cacchio|diavolo|maial[ei]|vacca|zozz[oa]|'
-    r'stronz[oa]|fottut[oa]|impiccat[oa]|ruffian[oa]))'
+    r'(?:(?P<subj2>dio|cristo|madonn[ae]|gesù|gesu|signore)\s+'
+    r"(?P<epi>[a-zà-ù']{3,}))"
     r')(?![a-zà-ù])'
 )
+
+# Tokens that can legitimately follow dio/cristo/madonna/gesù without
+# counting as blasphemy: possessives, definite/indefinite articles + prep,
+# the rest of a compound holy name, reverent adjectives, common adverbs.
+# Growing this list is the maintenance path — matcher is open-set so any
+# creative insult ("lazzarone", "canchero", "imbufalita", "belva", …) is
+# caught automatically; only reverent/structural neighbours need naming.
+BLASPHEMY_STOPWORDS = frozenset({
+    # possessives / pronouns
+    "mio", "mia", "miei", "mie", "tuo", "tua", "tuoi", "tue",
+    "nostro", "nostra", "nostri", "nostre",
+    "ti", "ci", "mi", "si", "li", "le", "lo", "la", "gli",
+    # reverent epithets
+    "santo", "santa", "santi", "sante", "santissimo", "santissima",
+    "benedetto", "benedetta", "benedetti", "benedette", "benedica",
+    "onnipotente", "immacolata", "addolorata", "misericordioso",
+    "misericordiosa", "vergine", "protettore", "protettrice",
+    # compound holy names / liturgy
+    "cristo", "maria", "giuseppe", "bambino", "bambina", "bambini",
+    "padre", "figlio", "spirito",
+    # common prepositions / articles / fillers
+    "di", "del", "della", "delle", "dei", "degli", "al", "alla",
+    "in", "con", "per", "tra", "fra", "se", "che", "chi",
+    "e", "o", "ma", "non", "sì", "si",
+    # very common verbs in reverent phrases
+    "è", "sia", "sa", "ha", "era", "sono", "sei", "fu",
+    "aiutaci", "salvaci", "perdonami", "perdonaci", "proteggici",
+    "grazie", "prega", "benedici", "amen",
+    # frequent false positives seen in Italian chat
+    "caro", "cara", "buono", "buona", "amore", "amori", "mio",
+    "pietà", "celeste", "assunta",
+})
 
 CONCAT_PAT = re.compile(
     r'(?i)(?<![a-zà-ù])(?P<concat>'
     r'porc(?:odd?io|ocristo|amadonna|ogiuda|addio|amiseria|hetta|opupazzo|ogesù|ogesu)|'
-    r'madonn(?:apputtana|apampisa|aladra|amerda|atroia|abastarda|apuzzona|amannara)|'
+    r'madonn(?:apputtana|apampisa|aladra|amerda|atroia|abastarda|apuzzona|amannara|'
+    r'aimbufalita|araggrinzita|aimpestata)|'
     r'dio(?:f[ae]|can[ei]|merd[ae]?|boi[ae]|lup[oi]|porc[oi]|str(?:onzo)?|'
-    r'bestia|ladr[oi]|schifoso|catamarano|giuda|maiale|vacca|cacchio|bastardo)|'
+    r'bestia|ladr[oi]|schifoso|catamarano|giuda|maiale|vacca|cacchio|bastardo|'
+    r'belva|lazzarone|canchero|imbecille|imbufalit[ao]|stramaledetto)|'
     r'cristo(?:can[ei]|merd[ae]?|boi[ae]|porc[oi])|'
-    r'ges(?:ù|u)(?:can[ei]|bambin[oi])'
+    r'ges(?:ù|u)(?:can[ei]|bambin[oi]|lazzarone)'
     r')(?![a-zà-ù])'
 )
 
 SUBJECT_CANON = {
     "dio": "dio", "dia": "dio",
-    "cristo": "cristo", "cristoforo": "cristo",
+    "cristo": "cristo",
     "madonna": "madonna", "madonne": "madonna",
     "gesù": "gesù", "gesu": "gesù",
 }
@@ -108,6 +140,11 @@ def process_blasphemy(text, nick, chan, data):
         subj = canon_subj(m.group("subj1") or m.group("subj2"))
         epi = m.group("epi")
         intens = m.group("intens")
+        # Open-slot form (subj + any token): reject when the token is a
+        # reverent/structural neighbour. Intensifier form (porco + subj)
+        # is always a hit — no stopword gate.
+        if epi and epi.lower() in BLASPHEMY_STOPWORDS:
+            continue
         bump(blas["total"], nick)
         bump(blas["per_channel"], chan, nick)
         bump(blas["by_subject"], subj, nick)
