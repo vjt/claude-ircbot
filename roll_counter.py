@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, re, glob, subprocess
+import json, re, glob, subprocess, sys
 from pathlib import Path
 
 STATE = Path("/home/vjt/code/claude-chatbot/rolls.json")
@@ -159,7 +159,69 @@ def backfill(data):
     save(data)
 
 
-def main():
+def stats_cmd(args):
+    """Print a leaderboard from rolls.json. Usage: roll_counter.py stats [N].
+    N caps each top-list (default 10). Same parsing schema as the daemon
+    writes, so this is the single source of truth for reading the state."""
+    top = 10
+    if args and args[0].isdigit():
+        top = int(args[0])
+    data = load()
+    blas = data.get("blasphemy", {})
+    total = blas.get("total", {})
+    concat = blas.get("concat", {})
+    by_subj = blas.get("by_subject", {})
+    rolls = data.get("by_cmd", {}).get("Roll", {})
+
+    def _sort_desc(d):
+        return sorted(d.items(), key=lambda x: -x[1])
+
+    print(f"🏆 BESTEMMIOMETRO (top {top}, totale eventi):")
+    for n, c in _sort_desc(total)[:top]:
+        print(f"  {n}: {c}")
+
+    all_forms: dict[str, int] = {}
+    for n, vv in concat.items():
+        for f, c in vv.items():
+            all_forms[f] = all_forms.get(f, 0) + c
+    print(f"\n🔥 CONCAT forms (top {top}):")
+    for f, c in _sort_desc(all_forms)[:top]:
+        print(f"  {f}: {c}")
+
+    print(f"\n🧬 concat creatività (varianti uniche per nick, top {top}):")
+    creativity = {n: len(v) for n, v in concat.items()}
+    for n, c in _sort_desc(creativity)[:top]:
+        print(f"  {n}: {c}")
+
+    print(f"\n🎯 subject breakdown (eventi per soggetto canonico):")
+    subj_totals: dict[str, int] = {}
+    for subj, per_nick in by_subj.items():
+        subj_totals[subj] = sum(per_nick.values())
+    for s, c in _sort_desc(subj_totals):
+        print(f"  {s}: {c}")
+
+    print(f"\n🎲 ::Roll:")
+    roll_total = rolls.get("total", {})
+    roll_variants = rolls.get("variants", {})
+    if not roll_total:
+        print("  (nessun roll registrato)")
+    else:
+        for n, c in _sort_desc(roll_total):
+            vars_for_n = [
+                (v or "vanilla", d.get(n, 0))
+                for v, d in roll_variants.items()
+                if d.get(n)
+            ]
+            vs = " ".join(f"{v}×{c2}" for v, c2 in vars_for_n)
+            print(f"  {n}: {c} ({vs})")
+
+    print(
+        f"\n📊 grand: {sum(total.values())} bestemmie, "
+        f"{len(total)} nick, {len(all_forms)} concat forms"
+    )
+
+
+def daemon():
     data = load()
     if not data.get("backfilled") or "blasphemy" not in data:
         data = empty()
@@ -173,6 +235,13 @@ def main():
     for line in p.stdout:
         if process(line, data):
             save(data)
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "stats":
+        stats_cmd(sys.argv[2:])
+        return
+    daemon()
 
 
 if __name__ == "__main__":
