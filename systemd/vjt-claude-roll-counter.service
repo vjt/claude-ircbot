@@ -1,0 +1,16 @@
+[Unit]
+Description=vjt-claude IRC blasphemy/::Roll counter sidecar
+Documentation=https://github.com/vjt/claude-ircbot
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/claude-chatbot
+ExecStart=/usr/bin/python3 -u /home/vjt/code/claude-chatbot/roll_counter.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/vjt/code/claude-chatbot/roll_counter.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
