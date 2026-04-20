@@ -112,7 +112,14 @@ def main():
     tool_input = data.get("tool_input", {}) or {}
     for rule in load_allow():
         if rule_matches(rule, tool, tool_input):
-            sys.exit(0)
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": f"matched rule: {rule}",
+                }
+            }))
+            return
 
     snippet = json.dumps(tool_input, ensure_ascii=False)[:180]
     notify(f"[PERM] {tool} {snippet}{hint_for(tool, tool_input)}")
