@@ -129,4 +129,6 @@ Two optional helpers ship in the repo. Both tail `bot.log` or the Claude Code se
 
 ## License
 
+![license](docs/img/license.jpg)
+
 MIT. See `LICENSE`.
