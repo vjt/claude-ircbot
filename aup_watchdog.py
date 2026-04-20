@@ -34,6 +34,18 @@ DEBOUNCE_SEC = 30           # any clear — AUP / idle / turns — holds this wi
 IDLE_SEC = 600              # 10 min of no jsonl writes = idle
 MAX_TURNS = 100             # assistant turns since last clear → eager clear
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
+POST_CLEAR_WAIT = 3         # seconds for /clear to settle before scrub prompt
+
+SCRUB_PROMPT = (
+    "Memory scrub per CLAUDE.md: for each `### YYYY-MM-DD` heading in "
+    "/home/vjt/code/IRC/vjt-claude/memory/project_activity_log.md older "
+    "than 14 days, review the bullets — promote anything that will matter "
+    "beyond 14d into a typed memory file (user_*/feedback_*/project_*/"
+    "reference_*), then delete the aged entry. Append one line to "
+    "/home/vjt/code/claude-chatbot/scrub.log with ISO timestamp, N days "
+    "trimmed, and list of files created/updated. NOTICE vjt via bot.send "
+    "ONLY if promotions occurred; otherwise stay silent."
+)
 
 STUCK_PATTERNS = re.compile(
     r"(unable to respond to this request|appears to violate our Usage Policy|Usage Policy)",
@@ -79,6 +91,21 @@ def inject_clear(pane: str) -> bool:
         return True
     except subprocess.CalledProcessError as e:
         log(f"tmux send-keys failed on {pane}: {e}")
+        return False
+
+
+def inject_scrub(pane: str) -> bool:
+    """After /clear has settled, kick a memory-scrub prompt into the pane.
+    Claude reads CLAUDE.md fresh on the first post-clear turn, so the
+    scrub prompt arrives with the housekeeping rules already in context."""
+    time.sleep(POST_CLEAR_WAIT)
+    try:
+        subprocess.check_call(
+            ["tmux", "send-keys", "-t", pane, SCRUB_PROMPT, "Enter"]
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        log(f"tmux send-keys (scrub) failed on {pane}: {e}")
         return False
 
 
@@ -154,7 +181,11 @@ def fire_clear(reason: str) -> bool:
         log(f"{reason} but no claude pane found — skipping")
         return False
     log(f"{reason} → injecting /clear into {pane}")
-    return inject_clear(pane)
+    if not inject_clear(pane):
+        return False
+    if inject_scrub(pane):
+        log(f"scrub prompt injected into {pane}")
+    return True
 
 
 def main() -> int:
