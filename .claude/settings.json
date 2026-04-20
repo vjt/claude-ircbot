@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash",
+      "TodoWrite",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "TaskGet",
+      "TaskOutput",
+      "TaskStop",
+      "Monitor",
+      "ToolSearch",
+      "WebSearch",
+      "ScheduleWakeup",
+      "ExitPlanMode",
+      "Skill"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/gate-permission.py"
+          }
+        ]
+      }
+    ]
+  }
+}
