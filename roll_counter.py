@@ -20,6 +20,21 @@ PRIVMSG_PAT = re.compile(
 BRIDGE_NICKS = {"Trillian"}
 BRIDGE_PREFIX_PAT = re.compile(r'^<([^>\s]+)>\s?(.*)$', re.DOTALL)
 
+# Nick aliasing — fold AFK/secondary nicks under a canonical identity so
+# per-person totals don't get split across `vjt` / `vjt42` / `vjt\`zZz`.
+# Grow this table as new aliases show up in chan. Applied at ingest, so
+# rebackfill (flip backfilled=False + restart service) migrates history.
+NICK_ALIASES = {
+    "vjt`afk": "vjt",
+    "vjt`zZz": "vjt",
+    "vjt42": "vjt",
+    "vjt_": "vjt",
+}
+
+
+def canon_nick(n):
+    return NICK_ALIASES.get(n, n)
+
 ACTION_CMD_PAT = re.compile(
     r'^ACTION\s+::(?P<cmd>[A-Za-z_][A-Za-z0-9_]*)'
     r'(?:\((?:"(?P<variant>[^"]*)")?\))?[;!]?\s*$'
@@ -200,6 +215,7 @@ def process(line, data, ts=None):
         if bm:
             nick = bm.group(1)
             text = bm.group(2)
+    nick = canon_nick(nick)
     hit = False
     if text.startswith("ACTION "):
         action_text = text  # keep "ACTION ..." prefix for ACTION_CMD_PAT
