@@ -37,7 +37,7 @@ Append a bullet under today's heading when any of these happens:
 
 **Do not log:** casual channel banter that didn't change anything, every IRC message, idle chatter, greetings, laughs, weather, sports, generic hot takes.
 
-Keep bullets terse: one line. Format: `**Thing** — why it matters (if non-obvious) — who (if relevant)`.
+Keep bullets terse: one line. Format: `HH:MM **Thing** — why it matters (if non-obvious) — who (if relevant)`. Prefix every bullet with local-time `HH:MM` — the date-only heading loses intra-day order otherwise (a `/clear` within the day wipes the live sense of time, and memory files with date-only stamps read as "yesterday" vs "5 minutes ago" indistinguishably). Typed memory files that carry dated sections should do the same: `### YYYY-MM-DD HH:MM ...`.
 
 ## The promotion rule
 

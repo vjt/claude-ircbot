@@ -46,7 +46,7 @@ def notify(text):
     try:
         fd = os.open(str(BOT_FIFO), os.O_WRONLY | os.O_NONBLOCK)
         try:
-            os.write(fd, f"NOTICE vjt {text}\n".encode())
+            os.write(fd, f"SAY vjt {text}\n".encode())
         finally:
             os.close(fd)
     except OSError:
