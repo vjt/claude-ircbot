@@ -11,6 +11,9 @@ scrub.log
 __pycache__/
 *.pyc
 
+# Raw source PNGs from Gemini — only compressed JPEGs under docs/img/ are committed
+docs/img/*.png
+
 # Private — channel-specific memory, not for public repo
 memory/
 
