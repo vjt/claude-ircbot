@@ -1,0 +1,19 @@
+[Unit]
+Description=vjt-claude IRC bridge bot (FIFO inbox + bot.log event stream)
+Documentation=https://github.com/vjt/claude-ircbot
+After=network-online.target default.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/IRC/vjt-claude
+ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/bot.py
+Restart=always
+RestartSec=30
+StartLimitBurst=5
+StartLimitIntervalSec=300
+StandardOutput=append:/home/vjt/code/IRC/vjt-claude/bot.stdout.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

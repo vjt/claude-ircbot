@@ -26,7 +26,7 @@ HOST = "irc.azzurra.chat"
 PORT = 6697
 NICK = "vjt-claude"
 IDENT = "claude"
-REAL = "Claude Code PoC (vjt)"
+REAL = "vjt-claude bot — https://github.com/vjt/claude-ircbot"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "bot.log")
