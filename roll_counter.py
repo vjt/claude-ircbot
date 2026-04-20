@@ -10,6 +10,12 @@ PRIVMSG_PAT = re.compile(
     re.MULTILINE,
 )
 
+# Trillian is an IRC↔Telegram bridge. Messages arrive from nick "Trillian"
+# with the real speaker wrapped as "<tgnick> rest of message". Unwrap so
+# stats attribute to the human, not the relay.
+BRIDGE_NICKS = {"Trillian"}
+BRIDGE_PREFIX_PAT = re.compile(r'^<([^>\s]+)>\s?(.*)$', re.DOTALL)
+
 ACTION_CMD_PAT = re.compile(
     r'^ACTION\s+::(?P<cmd>[A-Za-z_][A-Za-z0-9_]*)'
     r'(?:\((?:"(?P<variant>[^"]*)")?\))?[;!]?\s*$'
@@ -173,6 +179,11 @@ def process(line, data):
     text = m.group("text")
     if text.startswith("\x01") and text.endswith("\x01"):
         text = text[1:-1]
+    if nick in BRIDGE_NICKS:
+        bm = BRIDGE_PREFIX_PAT.match(text)
+        if bm:
+            nick = bm.group(1)
+            text = bm.group(2)
     hit = False
     if text.startswith("ACTION "):
         action_text = text  # keep "ACTION ..." prefix for ACTION_CMD_PAT
