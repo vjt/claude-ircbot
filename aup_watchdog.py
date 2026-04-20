@@ -42,7 +42,7 @@ SCRUB_PROMPT = (
     "than 14 days, review the bullets — promote anything that will matter "
     "beyond 14d into a typed memory file (user_*/feedback_*/project_*/"
     "reference_*), then delete the aged entry. Append one line to "
-    "/home/vjt/code/claude-chatbot/scrub.log with ISO timestamp, N days "
+    "/home/vjt/code/IRC/vjt-claude/scrub.log with ISO timestamp, N days "
     "trimmed, and list of files created/updated. NOTICE vjt via bot.send "
     "ONLY if promotions occurred; otherwise stay silent."
 )

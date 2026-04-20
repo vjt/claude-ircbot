@@ -6,5 +6,11 @@ bot.stdout.log
 aup_watchdog.log
 roll_counter.log
 rolls.json
+rolls.json.bak-*
+scrub.log
 __pycache__/
 *.pyc
+
+# Private — channel-specific memory, not for public repo
+memory/
+
