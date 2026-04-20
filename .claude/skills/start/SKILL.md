@@ -59,8 +59,6 @@ Monitor:
 
 Do NOT attach Monitor to sidecar services — they're silent-on-success by design (logs via `journalctl`).
 
-### 3.5. [removed — merged into step 2]
-
 ### 4. Greet on JOIN (auto-joins handled by bot.py)
 
 Home-channel JOINs (`#sniffo`, `#olografix`) + `ChanServ INVITE #it-opers` are now declared in `/home/vjt/code/IRC/vjt-claude/bot.startup` and fired by the bot after NickServ identifies. **Do NOT re-send them from the skill** — redundant. See `project_bot_auth_and_startup.md`.

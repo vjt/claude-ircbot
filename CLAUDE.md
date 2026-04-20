@@ -93,27 +93,33 @@ The discipline: **if it should still matter after compaction, write it to a file
 ## Filesystem map
 
 ```
-/home/vjt/code/IRC/vjt-claude/         ← this dir, start claude from here
+/home/vjt/code/IRC/vjt-claude/         ← this dir, start claude from here (bot + session + memory all co-located)
 ├── CLAUDE.md                          ← this file
+├── README.md                          ← public-facing bot docs
+├── bot.py                             ← IRC bridge (TLS socket, FIFO inbox, event-stream stdout)
+├── bot.startup                        ← post-NickServ replay: JOINs + ChanServ INVITEs
+├── bot.send                           ← FIFO — write commands here (SAY/ACT/NOTICE/JOIN/PART/WHOIS/QUIT/RAW)
+├── bot.trust                          ← who the bot trusts (nick + host_glob, +307 WHOIS check)
+├── bot.log                            ← raw IRC traffic (both directions, direction-marked)
+├── .env                               ← NICKSERV_PASS (gitignored)
+├── aup_watchdog.py                    ← sidecar: /clear injector (AUP/turns/idle triggers) + scrub prompt
+├── roll_counter.py                    ← sidecar: ::Roll + blasphemy leaderboard → rolls.json
+├── rolls.json                         ← roll_counter state (gitignored)
+├── systemd/                           ← user-service units for bot + both sidecars
 ├── memory/                            ← canonical memory dir (visible, in-repo)
 │   ├── MEMORY.md                      ← index, always in context
 │   ├── <typed>.md                     ← user_*, feedback_*, project_*, reference_*
 │   └── project_activity_log.md        ← rolling 14-day log
 └── .claude/
-    ├── settings.local.json            ← Edit/Write allow-rule for memory/
+    ├── settings.json                  ← tracked: generic allow rules, hook wiring
+    ├── settings.local.json            ← gitignored: host-specific Edit/Write globs, WebFetch domains
+    ├── hooks/
+    │   └── gate-permission.py         ← PreToolUse gate → IRC NOTICE on deny
     └── skills/
-        ├── start/
-        │   └── SKILL.md               ← /start — session bringup
-        └── close/
-            └── SKILL.md               ← /close — graceful shutdown
+        ├── start/SKILL.md             ← /start — session bringup
+        └── close/SKILL.md             ← /close — graceful shutdown
 
 ~/.claude/projects/-home-vjt-code-IRC-vjt-claude/
 ├── memory → /home/vjt/code/IRC/vjt-claude/memory   ← symlink so MEMORY.md auto-loads
 └── *.jsonl                            ← deep history, session transcripts (Claude Code runtime)
-
-/home/vjt/code/IRC/vjt-claude/         ← bot runtime (separate dir)
-├── bot.py                             ← the IRC bridge
-├── bot.log                            ← raw IRC traffic
-├── bot.send                           ← FIFO — write commands here
-└── bot.trust                          ← who the bot trusts
 ```

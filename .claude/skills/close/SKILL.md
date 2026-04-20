@@ -43,7 +43,9 @@ If `bot.log` tail shows no recent chatter (channel dead), fall back to a pure-Ma
 
 ### 3. Stop the Monitor
 
-Use `TaskStop` on the IRC event monitor task. This ends the stdout stream cleanly. If the Monitor was pattern-A (launched bot.py directly), the bot process dies with it — that's fine, we just QUIT'd anyway. If pattern-B (bot.py launched separately), bot.py keeps running detached; kill it if you want with `pkill -f 'python3 -u bot.py'`, otherwise leave it be (next `/start` will detect it).
+Use `TaskStop` on the IRC event monitor task — this ends the tail-of-`bot.log` stream cleanly.
+
+The bot itself is a systemd user service now (`vjt-claude-bot.service`) and is **not** coupled to the Monitor. The FIFO-`QUIT` in step 2 makes the bot disconnect gracefully and exit; systemd then sees it as a normal stop. Do NOT `systemctl --user stop` as well — the FIFO QUIT has already done it, and stacking the two races the reconnect window. Same applies to the sidecars: leave them alone, they'll keep running until next reboot / next `/start` cycle.
 
 ### 4. Memory consistency check
 
