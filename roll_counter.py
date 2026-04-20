@@ -333,13 +333,18 @@ RANGE_PERIODS = {
 
 def range_cmd(args):
     """Leaderboard filtered by rolling time window. Usage:
-    roll_counter.py range <day|week|month|year|all> [top]."""
+    roll_counter.py range <day|week|month|year|all> [top] [--irc]
+    --irc switches to compact multi-line format suited for PRIVMSG."""
+    irc = False
+    if "--irc" in args:
+        irc = True
+        args = [a for a in args if a != "--irc"]
     if not args or args[0] not in RANGE_PERIODS:
-        print(f"usage: roll_counter.py range <{'|'.join(RANGE_PERIODS)}> [top]",
+        print(f"usage: roll_counter.py range <{'|'.join(RANGE_PERIODS)}> [top] [--irc]",
               file=sys.stderr)
         sys.exit(2)
     period = args[0]
-    top = int(args[1]) if len(args) > 1 and args[1].isdigit() else 10
+    top = int(args[1]) if len(args) > 1 and args[1].isdigit() else (5 if irc else 10)
     data = load()
     events = data.get("events", [])
     window = RANGE_PERIODS[period]
@@ -371,6 +376,33 @@ def range_cmd(args):
         return sorted(d.items(), key=lambda x: -x[1])
 
     label = "all-time" if period == "all" else f"ultimi {period}"
+
+    if irc:
+        # Compact multi-line format for PRIVMSG: one line per axis,
+        # each ≤ ~360 chars to stay safely under the 512-byte IRC limit
+        # after the bot prepends `:nick!user@host PRIVMSG #chan :`.
+        header = f"📅 {label} · {len(filtered)} eventi · top {top}"
+        top_bast = " ".join(f"{n}:{c}" for n, c in _sort_desc(total)[:top]) or "(vuoto)"
+        top_concat = " ".join(f"{f}×{c}" for f, c in _sort_desc(concat_forms)[:top]) or "(vuoto)"
+        top_subj = " ".join(f"{s}:{c}" for s, c in _sort_desc(subjects)) or "(vuoto)"
+        if rolls:
+            parts = []
+            for n, c in _sort_desc(rolls):
+                vs = " ".join(
+                    f"{v}×{roll_variants[v].get(n, 0)}"
+                    for v in roll_variants if roll_variants[v].get(n)
+                )
+                parts.append(f"{n}:{c}({vs})")
+            rolls_line = " ".join(parts)
+        else:
+            rolls_line = "(nessun roll)"
+        print(header)
+        print(f"🏆 {top_bast}")
+        print(f"🔥 {top_concat}")
+        print(f"🎯 {top_subj}")
+        print(f"🎲 {rolls_line}")
+        return
+
     print(f"🏆 BESTEMMIOMETRO — {label} (top {top}, {len(filtered)} eventi):")
     if not total:
         print("  (nessun evento nel periodo)")
