@@ -1,37 +1,48 @@
 #!/usr/bin/env python3
-"""PreToolUse gate: auto-deny tools not in allow list, notify vjt on IRC.
+"""PreToolUse gate — wholesale.
 
-Scope: WebFetch, WebSearch (the tools that commonly block on new domains).
-Other tools fall through to CC's native prompt (still blocking, but rare for
-Read/Grep/Glob/Bash/Edit which have their own broad allows).
+Fires on every tool (matcher `*` in settings.local.json). Allow-list lives in
+.claude/settings.local.json `permissions.allow`. No match → fast deny + IRC
+NOTICE to vjt so a blocked call surfaces on IRC instead of CC's silent prompt.
 
-Allow-rule syntax honored here (subset of CC's permission grammar):
-    WebFetch                             — bare tool = allow all
-    WebFetch(domain:host)                — exact host
-    WebFetch(domain:*.host)              — subdomain wildcard
-    WebSearch                            — bare
+Allow-rule grammar (superset of CC native):
+    <Tool>                          — bare = any use
+    Read(<path-glob>)               — fnmatch on tool_input.file_path
+    Edit(<path-glob>)               — idem
+    Write(<path-glob>)              — idem
+    NotebookEdit(<path-glob>)       — idem
+    Bash(<cmd-glob>)                — fnmatch on tool_input.command
+    WebFetch(domain:<host>)         — exact host
+    WebFetch(domain:*.<suffix>)     — subdomain wildcard
+    Skill(<name>)                   — exact skill name
+    <Tool>(<key>:<value>)           — generic key:value equality on tool_input
 """
-import json, sys
+import fnmatch
+import json
+import os
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 SETTINGS = Path("/home/vjt/code/IRC/vjt-claude/.claude/settings.local.json")
 BOT_FIFO = Path("/home/vjt/code/IRC/vjt-claude/bot.send")
-GATED = ("WebFetch", "WebSearch")
 
 
 def notify(text):
+    """Non-blocking FIFO write — silent if bot is down (no reader)."""
     try:
-        with BOT_FIFO.open("w") as f:
-            f.write(f"NOTICE vjt {text}\n")
-    except Exception:
+        fd = os.open(str(BOT_FIFO), os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(fd, f"NOTICE vjt {text}\n".encode())
+        finally:
+            os.close(fd)
+    except OSError:
         pass
 
 
 def host_matches(pattern, host):
     if pattern.startswith("*."):
-        suf = pattern[1:]
-        return host == pattern[2:] or host.endswith(suf)
+        return host == pattern[2:] or host.endswith(pattern[1:])
     return host == pattern
 
 
@@ -39,13 +50,44 @@ def rule_matches(rule, tool, tool_input):
     if rule == tool:
         return True
     prefix = f"{tool}("
-    if not rule.startswith(prefix) or not rule.endswith(")"):
+    if not (rule.startswith(prefix) and rule.endswith(")")):
         return False
     inner = rule[len(prefix):-1]
+
+    if tool in ("Read", "Edit", "Write", "NotebookEdit"):
+        return fnmatch.fnmatchcase(tool_input.get("file_path", ""), inner)
+
+    if tool == "Bash":
+        return fnmatch.fnmatchcase(tool_input.get("command", ""), inner)
+
     if tool == "WebFetch" and inner.startswith("domain:"):
         host = urlparse(tool_input.get("url", "")).hostname or ""
         return host_matches(inner[7:], host)
+
+    if tool == "Skill":
+        return tool_input.get("skill", "") == inner
+
+    if ":" in inner:
+        k, v = inner.split(":", 1)
+        return str(tool_input.get(k, "")) == v
+
     return False
+
+
+def hint_for(tool, tool_input):
+    if tool == "WebFetch":
+        h = urlparse(tool_input.get("url", "")).hostname or "?"
+        return f' — "vjt-claude: allow WebFetch(domain:{h})"'
+    if tool in ("Read", "Edit", "Write", "NotebookEdit"):
+        p = tool_input.get("file_path", "?")
+        return f' — "vjt-claude: allow {tool}({p})"'
+    if tool == "Bash":
+        c = (tool_input.get("command", "") or "").split()[0] or "?"
+        return f' — "vjt-claude: allow Bash({c} *)"'
+    if tool == "Skill":
+        n = tool_input.get("skill", "?")
+        return f' — "vjt-claude: allow Skill({n})"'
+    return f' — "vjt-claude: allow {tool}"'
 
 
 def main():
@@ -54,8 +96,6 @@ def main():
     except Exception:
         sys.exit(0)
     tool = data.get("tool_name", "")
-    if tool not in GATED:
-        sys.exit(0)
     tool_input = data.get("tool_input", {}) or {}
     try:
         allow = json.loads(SETTINGS.read_text()).get("permissions", {}).get("allow", [])
@@ -64,17 +104,14 @@ def main():
     for rule in allow:
         if rule_matches(rule, tool, tool_input):
             sys.exit(0)
+
     snippet = json.dumps(tool_input, ensure_ascii=False)[:180]
-    host_hint = ""
-    if tool == "WebFetch":
-        h = urlparse(tool_input.get("url", "")).hostname or "?"
-        host_hint = f' — per sbloccare dimmi: "vjt-claude: allow WebFetch(domain:{h})"'
-    notify(f"[PERM] {tool} {snippet}{host_hint}")
+    notify(f"[PERM] {tool} {snippet}{hint_for(tool, tool_input)}")
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": f"{tool} non in allow list di settings.local.json — chiesto a vjt su IRC, aspetta risposta prima di ritentare",
+            "permissionDecisionReason": f"{tool} non in allow list — chiesto a vjt via IRC, aspetta ok prima di ritentare",
         }
     }))
 
