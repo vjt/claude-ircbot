@@ -75,10 +75,29 @@ See `project_greet_on_join.md` in memory.
 A watchdog-triggered scrub means the prior session was likely mid-task. /clear wipes conversation context; disk state survives. Before idling, sweep three sources for pending work:
 
 - **`git status --short`** — modified / untracked files = unfinished edits. Read the files, figure out what was in progress, finish it without asking (unless the next step is destructive).
-- **`tail -300 /home/vjt/code/IRC/vjt-claude/bot.log | grep ' < :'`** — recent inbound IRC events. Look for anything addressed to `vjt-claude` (nick mention or direct query) that never got a reply. Check last outbound (`' > '`) too — a half-sent response may have cut off.
+
+- **bot.log — dedup BOTH directions before acting.** Inbound alone is a trap: /clear drops the conversation, but outbound on disk proves I already answered. **Always read inbound AND outbound interleaved, and read enough of it.**
+
+  Default sweep — last 50 lines, both directions, cap 100:
+
+  ```bash
+  tail -50 /home/vjt/code/IRC/vjt-claude/bot.log | grep -E ' [<>] '
+  ```
+
+  (50 lines = the fresh tail right around the scrub boundary. Widen to 100 only if the 50-line window ends mid-exchange or if the /clear clearly came from TURNS≥100 after a dense burst. Don't go beyond 100 — old requests beyond the scrub horizon are stale by design; answering them now looks broken.)
+
+  Algorithm for each inbound request addressed to me (`vjt-claude:` prefix, nick mention, or direct query):
+
+  1. Note the timestamp `T` of the inbound line.
+  2. Scan outbound (`' > PRIVMSG <chan>'` or `' > NOTICE <nick>'`) with timestamp `> T` in the same channel / to the same nick.
+  3. If any outbound line plausibly answers the request (topic match, not just unrelated chatter), **treat as already-handled — do not reply again.**
+  4. Only true gaps (inbound request with no matching outbound after) get a reply.
+
+  Half-sent cut-off case: if the newest outbound to that chan is a partial / truncated line with no closing thought, then finish it. But a full prior reply = done, even if you'd word it differently now.
+
 - **Prior session jsonl** — `ls -t ~/.claude/projects/-home-vjt-code-IRC-vjt-claude/*.jsonl | head -3`. If git + bot.log don't clarify, dump the tail of the most recent pre-clear jsonl to see the final assistant turn (what you were about to do) and the final user turn (what was asked).
 
-The sweep runs unconditionally — even when nothing is pending, knowing the last channel activity sets context. Only the follow-up action is conditional: if WIP found, resume it; if not, idle quietly. Don't announce "nothing found" — silence is correct when nothing's pending.
+The sweep runs unconditionally — even when nothing is pending, knowing the last channel activity sets context. Only the follow-up action is conditional: if WIP found, resume it; if not, idle quietly. Don't announce "nothing found" — silence is correct when nothing's pending. **When in doubt between replying and staying silent, stay silent** — a duplicate reply is worse than a missed one (Sonic can re-ping; a dupe makes vjt-claude look broken).
 
 ### 6. Report ready
 
