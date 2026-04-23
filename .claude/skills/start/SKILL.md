@@ -46,7 +46,7 @@ Monitor:
   timeout_ms: 3600000
   command: |
     tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.log | \
-      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|INVITE|NOTICE) '
+      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|NICK|INVITE|NOTICE) '
 ```
 
 **Filter semantics — important:**
