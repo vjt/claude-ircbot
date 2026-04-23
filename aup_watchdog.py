@@ -3,8 +3,8 @@
 Watchdog / clear-sidecar for the long-lived Claude Code session that
 powers vjt-claude. Tails the active session JSONL under
 ~/.claude/projects/-home-vjt-code-IRC-vjt-claude/ and injects `/clear`
-into the tmux pane running `claude` in window `0:ircbot` on two
-independent triggers:
+into the tmux pane running `claude` in window `ircbot` (resolved
+session-agnostic via `tmux list-panes -a`) on three independent triggers:
 
 1. AUP refusal — assistant message matches "Usage Policy" / "unable to
    respond" pattern → clear immediately.
@@ -19,7 +19,6 @@ per vjt's request to also free KV on quiet periods.)
 """
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -27,7 +26,9 @@ import time
 from pathlib import Path
 
 PROJECT_DIR = Path.home() / ".claude/projects/-home-vjt-code-IRC-vjt-claude"
-TMUX_WINDOW = "0:ircbot"
+TMUX_WINDOW_NAME = "ircbot"  # window name only — session-agnostic
+BOT_FIFO = Path("/home/vjt/code/IRC/vjt-claude/bot.send")
+ESCALATE_NICK = "vjt"        # SAY target when resolve stays broken
 
 POLL_SEC = 2
 DEBOUNCE_SEC = 30           # any clear — AUP / idle / turns — holds this window
@@ -35,16 +36,13 @@ IDLE_SEC = 600              # 10 min of no jsonl writes = idle
 MAX_TURNS = 100             # assistant turns since last clear → eager clear
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
 POST_CLEAR_WAIT = 3         # seconds for /clear to settle before scrub prompt
+RESOLVE_ALERT_SEC = 300     # consecutive resolve failures before IRC escalation
+LOG_DEDUP_SEC = 60          # collapse identical consecutive log lines for this long
 
 SCRUB_PROMPT = (
-    "Memory scrub per CLAUDE.md: for each `### YYYY-MM-DD` heading in "
-    "/home/vjt/code/IRC/vjt-claude/memory/project_activity_log.md older "
-    "than 14 days, review the bullets — promote anything that will matter "
-    "beyond 14d into a typed memory file (user_*/feedback_*/project_*/"
-    "reference_*), then delete the aged entry. Append one line to "
-    "/home/vjt/code/IRC/vjt-claude/scrub.log with ISO timestamp, N days "
-    "trimmed, and list of files created/updated. NOTICE vjt via bot.send "
-    "ONLY if promotions occurred; otherwise stay silent."
+    "[watchdog] your context was reset (AUP refusal / idle / turn-cap). "
+    "Monitor task + bot still active — no /start needed. Resume processing "
+    "inbound events silently."
 )
 
 STUCK_PATTERNS = re.compile(
@@ -53,8 +51,38 @@ STUCK_PATTERNS = re.compile(
 )
 
 
-def log(msg: str) -> None:
+_log_state: dict[str, float | str | int] = {"last_msg": "", "last_ts": 0.0, "repeat": 0}
+
+
+def _emit(msg: str) -> None:
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def log(msg: str) -> None:
+    """Print with dedup: identical consecutive lines collapse for LOG_DEDUP_SEC,
+    then emit a '(repeated N times in X s)' summary on transition."""
+    now = time.time()
+    last_msg = _log_state["last_msg"]
+    last_ts = float(_log_state["last_ts"])
+    repeat = int(_log_state["repeat"])
+    if msg == last_msg and now - last_ts < LOG_DEDUP_SEC:
+        _log_state["repeat"] = repeat + 1
+        return
+    if repeat > 0 and isinstance(last_msg, str):
+        _emit(f"(last line repeated {repeat}x over {int(now - last_ts)}s)")
+    _emit(msg)
+    _log_state["last_msg"] = msg
+    _log_state["last_ts"] = now
+    _log_state["repeat"] = 0
+
+
+def send_fifo_say(nick: str, msg: str) -> None:
+    """Fire a SAY to the IRC bridge FIFO — best effort, never raises."""
+    try:
+        with BOT_FIFO.open("w") as f:
+            f.write(f"SAY {nick} {msg}\n")
+    except OSError as e:
+        _emit(f"FIFO write failed: {e!r}")
 
 
 def latest_jsonl() -> Path | None:
@@ -67,20 +95,32 @@ def latest_jsonl() -> Path | None:
 
 
 def resolve_claude_pane() -> str | None:
+    """Find the pane where window_name == TMUX_WINDOW_NAME AND
+    pane_current_command == 'claude'. NO fallback — there are multiple
+    claude panes in this tmux server, only the ircbot window counts."""
     try:
         out = subprocess.check_output(
-            ["tmux", "list-panes", "-t", TMUX_WINDOW,
-             "-F", "#{pane_id} #{pane_current_command}"],
+            ["tmux", "list-panes", "-a", "-F",
+             "#{window_name}\t#{pane_current_command}\t#{pane_id}"],
             text=True,
         )
     except subprocess.CalledProcessError as e:
         log(f"tmux list-panes failed: {e}")
         return None
+    matches: list[str] = []
     for line in out.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) == 2 and parts[1] == "claude":
-            return parts[0]
-    return None
+        parts = line.strip().split("\t")
+        if len(parts) != 3:
+            continue
+        win, cmd, pid = parts
+        if win == TMUX_WINDOW_NAME and cmd == "claude":
+            matches.append(pid)
+    if not matches:
+        log(f"no pane with window={TMUX_WINDOW_NAME!r} cmd=claude")
+        return None
+    if len(matches) > 1:
+        log(f"multiple candidate panes {matches} — picking first")
+    return matches[0]
 
 
 def inject_clear(pane: str) -> bool:
@@ -106,9 +146,14 @@ def inject_scrub(pane: str) -> bool:
     """
     time.sleep(POST_CLEAR_WAIT)
     try:
-        subprocess.check_call(
+        # check_call wraps Popen directly, which does NOT accept input= —
+        # only subprocess.run / Popen.communicate do. Using check_call here
+        # raises TypeError that bubbles past fire_clear, leaving last_fire
+        # unset so debounce never engages and /clear stacks up in the pane.
+        subprocess.run(
             ["tmux", "load-buffer", "-b", "vjt-claude-scrub", "-"],
             input=SCRUB_PROMPT.encode(),
+            check=True,
         )
         subprocess.check_call(
             ["tmux", "paste-buffer", "-b", "vjt-claude-scrub", "-d", "-t", pane]
@@ -189,11 +234,37 @@ def has_pending_tool_use(lines: list[str]) -> bool:
     return any(tid not in results for tid in used)
 
 
+_resolve_state: dict[str, float | bool] = {"fail_since": 0.0, "alerted": False}
+
+
 def fire_clear(reason: str) -> bool:
     pane = resolve_claude_pane()
+    now = time.time()
     if pane is None:
+        fail_since = float(_resolve_state["fail_since"])
+        if fail_since == 0.0:
+            _resolve_state["fail_since"] = now
+        elif (
+            not _resolve_state["alerted"]
+            and now - fail_since >= RESOLVE_ALERT_SEC
+        ):
+            msg = (
+                f"watchdog: can't find claude pane "
+                f"(window={TMUX_WINDOW_NAME}, cmd=claude) for "
+                f"{int(now - fail_since)}s — /clear injection stalled ({reason})"
+            )
+            log(f"ESCALATING to {ESCALATE_NICK}: {msg}")
+            send_fifo_say(ESCALATE_NICK, msg)
+            _resolve_state["alerted"] = True
         log(f"{reason} but no claude pane found — skipping")
         return False
+    if _resolve_state["alerted"]:
+        send_fifo_say(
+            ESCALATE_NICK,
+            f"watchdog: pane resolved again ({pane}) — back to normal",
+        )
+    _resolve_state["fail_since"] = 0.0
+    _resolve_state["alerted"] = False
     log(f"{reason} → injecting /clear into {pane}")
     if not inject_clear(pane):
         return False
@@ -270,6 +341,10 @@ def main() -> int:
                     fired_this_tick = True
 
             # --- Idle trigger: jsonl quiet + no pending tool_use ---
+            # `mtime > last_fire` gates on evidence that CC actually processed
+            # the previous /clear (wrote at least one line after it). Without
+            # this, a stuck pane never advances mtime → age stays huge → every
+            # DEBOUNCE_SEC fires another /clear → clears pile up in CC's input.
             if not fired_this_tick:
                 age = now - current_file.stat().st_mtime
                 boot_age = now - boot_ts
@@ -277,6 +352,7 @@ def main() -> int:
                     age >= IDLE_SEC
                     and boot_age >= IDLE_SEC
                     and now - last_fire >= DEBOUNCE_SEC
+                    and current_file.stat().st_mtime > last_fire
                 ):
                     if has_pending_tool_use(tail_lines(current_file)):
                         log(f"idle {int(age)}s but pending tool_use — skipping")
