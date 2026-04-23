@@ -37,8 +37,21 @@ def canon_nick(n):
 
 ACTION_CMD_PAT = re.compile(
     r'^ACTION\s+::(?P<cmd>[A-Za-z_][A-Za-z0-9_]*)'
-    r'(?:\((?:"(?P<variant>[^"]*)")?\))?[;!]?\s*$'
+    r'(?:\((?:"?(?P<variant>[^")]*)"?)?\))?[;!]?\s*$'
 )
+
+# Dice-like ACTION commands we track as first-class. Key = lowercase
+# match token, value = display/storage name. Extend as new idioms pop
+# up in chan. Non-whitelisted ::Foo actions are ignored so by_cmd stays
+# focused and doesn't collect random noise.
+ROLL_COMMANDS = {
+    "roll": "Roll",
+    "dab": "Dab",
+}
+
+
+def canon_cmd(cmd):
+    return ROLL_COMMANDS.get(cmd.lower())
 
 BLASPHEMY_PAT = re.compile(
     r'(?i)(?<![a-zà-ù])('
@@ -157,7 +170,9 @@ def process_action_cmd(text, nick, chan, data, ts=None):
     m = ACTION_CMD_PAT.match(text)
     if not m:
         return False
-    cmd = m.group("cmd")
+    cmd = canon_cmd(m.group("cmd"))
+    if cmd is None:
+        return False
     variant = m.group("variant") or ""
     by_cmd = data.setdefault("by_cmd", {})
     entry = by_cmd.setdefault(cmd, {"total": {}, "per_channel": {}, "variants": {}})
@@ -288,7 +303,7 @@ def stats_cmd(args):
     total = blas.get("total", {})
     concat = blas.get("concat", {})
     by_subj = blas.get("by_subject", {})
-    rolls = data.get("by_cmd", {}).get("Roll", {})
+    by_cmd = data.get("by_cmd", {})
 
     def _sort_desc(d):
         return sorted(d.items(), key=lambda x: -x[1])
@@ -317,12 +332,14 @@ def stats_cmd(args):
     for s, c in _sort_desc(subj_totals):
         print(f"  {s}: {c}")
 
-    print(f"\n🎲 ::Roll:")
-    roll_total = rolls.get("total", {})
-    roll_variants = rolls.get("variants", {})
-    if not roll_total:
-        print("  (nessun roll registrato)")
-    else:
+    for display in ROLL_COMMANDS.values():
+        entry = by_cmd.get(display, {})
+        roll_total = entry.get("total", {})
+        roll_variants = entry.get("variants", {})
+        print(f"\n🎲 ::{display}:")
+        if not roll_total:
+            print(f"  (nessun {display.lower()} registrato)")
+            continue
         for n, c in _sort_desc(roll_total):
             vars_for_n = [
                 (v or "vanilla", d.get(n, 0))
@@ -369,7 +386,7 @@ def range_cmd(args):
 
     total, concat_forms, subjects = {}, {}, {}
     concat_per_nick = {}
-    rolls, roll_variants = {}, {}
+    per_cmd = {display: ({}, {}) for display in ROLL_COMMANDS.values()}
     for e in filtered:
         n, k = e.get("nick"), e.get("kind")
         if k == "blasphemy":
@@ -382,7 +399,8 @@ def range_cmd(args):
             f = e.get("form", "")
             concat_forms[f] = concat_forms.get(f, 0) + 1
             concat_per_nick.setdefault(n, set()).add(f)
-        elif k == "cmd" and e.get("cmd") == "Roll":
+        elif k == "cmd" and e.get("cmd") in per_cmd:
+            rolls, roll_variants = per_cmd[e["cmd"]]
             rolls[n] = rolls.get(n, 0) + 1
             v = e.get("variant") or "vanilla"
             roll_variants.setdefault(v, {})
@@ -401,7 +419,10 @@ def range_cmd(args):
         top_bast = " ".join(f"{n}:{c}" for n, c in _sort_desc(total)[:top]) or "(vuoto)"
         top_concat = " ".join(f"{f}×{c}" for f, c in _sort_desc(concat_forms)[:top]) or "(vuoto)"
         top_subj = " ".join(f"{s}:{c}" for s, c in _sort_desc(subjects)) or "(vuoto)"
-        if rolls:
+        cmd_lines = []
+        for display, (rolls, roll_variants) in per_cmd.items():
+            if not rolls:
+                continue
             parts = []
             for n, c in _sort_desc(rolls):
                 vs = " ".join(
@@ -409,14 +430,15 @@ def range_cmd(args):
                     for v in roll_variants if roll_variants[v].get(n)
                 )
                 parts.append(f"{n}:{c}({vs})")
-            rolls_line = " ".join(parts)
-        else:
-            rolls_line = "(nessun roll)"
+            cmd_lines.append(f"🎲 {display}: " + " ".join(parts))
+        if not cmd_lines:
+            cmd_lines.append("🎲 (nessun roll/dab)")
         print(header)
         print(f"🏆 {top_bast}")
         print(f"🔥 {top_concat}")
         print(f"🎯 {top_subj}")
-        print(f"🎲 {rolls_line}")
+        for line in cmd_lines:
+            print(line)
         return
 
     print(f"🏆 BESTEMMIOMETRO — {label} (top {top}, {len(filtered)} eventi):")
@@ -440,10 +462,11 @@ def range_cmd(args):
     for s, c in _sort_desc(subjects):
         print(f"  {s}: {c}")
 
-    print(f"\n🎲 ::Roll:")
-    if not rolls:
-        print("  (nessun roll)")
-    else:
+    for display, (rolls, roll_variants) in per_cmd.items():
+        print(f"\n🎲 ::{display}:")
+        if not rolls:
+            print(f"  (nessun {display.lower()})")
+            continue
         for n, c in _sort_desc(rolls):
             vs = " ".join(
                 f"{v}×{roll_variants[v].get(n, 0)}"
