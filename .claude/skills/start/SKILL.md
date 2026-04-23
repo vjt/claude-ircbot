@@ -70,7 +70,17 @@ The skill still owns the **greet on own JOIN event** — when the Monitor shows 
 
 See `project_greet_on_join.md` in memory.
 
-### 5. Report ready
+### 5. Pick up work-in-progress
+
+A watchdog-triggered scrub means the prior session was likely mid-task. /clear wipes conversation context; disk state survives. Before idling, sweep three sources for pending work:
+
+- **`git status --short`** — modified / untracked files = unfinished edits. Read the files, figure out what was in progress, finish it without asking (unless the next step is destructive).
+- **`tail -300 /home/vjt/code/IRC/vjt-claude/bot.log | grep ' < :'`** — recent inbound IRC events. Look for anything addressed to `vjt-claude` (nick mention or direct query) that never got a reply. Check last outbound (`' > '`) too — a half-sent response may have cut off.
+- **Prior session jsonl** — `ls -t ~/.claude/projects/-home-vjt-code-IRC-vjt-claude/*.jsonl | head -3`. If git + bot.log don't clarify, dump the tail of the most recent pre-clear jsonl to see the final assistant turn (what you were about to do) and the final user turn (what was asked).
+
+The sweep runs unconditionally — even when nothing is pending, knowing the last channel activity sets context. Only the follow-up action is conditional: if WIP found, resume it; if not, idle quietly. Don't announce "nothing found" — silence is correct when nothing's pending.
+
+### 6. Report ready
 
 Brief status line to the user, e.g.:
 - `vjt-claude online. bot PID 3608206, Monitor task <id>, log trimmed to last 14d.`
