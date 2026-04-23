@@ -9,8 +9,8 @@ WorkingDirectory=/home/vjt/code/IRC/vjt-claude
 ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/aup_watchdog.py
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:/home/vjt/code/IRC/vjt-claude/aup_watchdog.log
-StandardError=inherit
+# stdout/stderr default = journal; view with
+#   journalctl --user-unit vjt-claude-aup-watchdog.service -f
 
 [Install]
 WantedBy=default.target
