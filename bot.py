@@ -284,6 +284,16 @@ def handle_server_line(line):
     if cmd in ("464", "465"):
         emit("AUTH_ERROR", cmd, rest)
         return
+    if cmd == "401":
+        # ERR_NOSUCHNICK: ":server 401 <me> <target> :No such nick/channel"
+        # Surface as event so silent PRIVMSG/NOTICE failures become visible
+        # (otherwise they only land in bot.log and the sender never retries).
+        parts = rest.split(" :", 1)
+        head = parts[0].split()
+        tgt = head[1] if len(head) > 1 else ""
+        reason = parts[1] if len(parts) > 1 else "No such nick/channel"
+        emit("IRC_ERROR", "401", tgt, reason)
+        return
     if cmd == "307":
         # RPL_WHOISREGNICK: ":server 307 <me> <target> :has identified for this nick"
         parts = rest.split()
@@ -475,8 +485,17 @@ def main():
     load_trust()
     ctx = ssl.create_default_context()
     raw = socket.create_connection((HOST, PORT), timeout=30)
+    # Belt-and-suspenders against silent TCP death (NAT/ISP drops):
+    # kernel keepalive probes + app-level recv timeout. Server PINGs us
+    # ~3-5min; 420s timeout on recv surfaces a stalled socket as
+    # socket.timeout -> reader_loop returns -> systemd Restart=always.
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15)
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4)
     sock = ctx.wrap_socket(raw, server_hostname=HOST)
-    sock.settimeout(None)
+    sock.settimeout(420)
     emit("TLS_OK", HOST, PORT)
     send_raw(f"NICK {NICK}")
     send_raw(f"USER {IDENT} 0 * :{REAL}")
