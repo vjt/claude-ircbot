@@ -23,9 +23,7 @@ memory/
 # Reference material (private copies of Azzurra helpers docs, etc.)
 refs/
 
-# Scratch / transient workspace crud (trim dumps, cleanup tsvs, runtime locks)
+# Scratch / transient workspace crud — dump here, gitignored wholesale
+tmp/
 *.lock
-activity_log_trim_dump.txt
-insulti_*.tsv
-insulti_*.txt
 
