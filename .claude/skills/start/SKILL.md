@@ -57,14 +57,14 @@ Monitor:
   timeout_ms: 3600000
   command: |
     tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.log | \
-      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|NICK|INVITE|NOTICE) '
+      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|NICK|INVITE|NOTICE|MODE) '
 ```
 
 **Filter semantics — important:**
 
 - `' < :'` anchors on **inbound** lines only. Outbound (`' > '`) lines are my own IRC sends — echoing them back creates a self-confirmation feedback loop. Never tail outbound.
 - The `:[^ ]+` group eats the `:nick!user@host` source prefix before the verb, so server-notice lines (`< PING :server`) which lack a source are intentionally excluded — they're noise.
-- Verb alternation is the minimal user-action set: PRIVMSG, JOIN, PART, QUIT, INVITE, NOTICE. Mode changes, TOPIC, 3-digit numerics stay out of the event stream — they're rarely actionable and bloat notifications.
+- Verb alternation: PRIVMSG, JOIN, PART, QUIT, INVITE, NOTICE, MODE. MODE is in so I can track who had `+o` in-session (enables re-opping returning ops while vjt is away, per `project_vjt_proxy_on_away.md`). TOPIC and 3-digit numerics stay out — rarely actionable, bloats notifications.
 - `--line-buffered` is mandatory on grep — without it, pipe buffering delays events by minutes.
 - `tail -F` (capital F) survives log rotation. Use `-n 0` so we don't replay history on attach.
 
