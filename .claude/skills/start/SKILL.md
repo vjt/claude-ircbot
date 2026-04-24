@@ -35,9 +35,20 @@ systemctl --user start vjt-claude-bot.service vjt-claude-roll-counter.service vj
 
 Nothing to mkfifo / nohup / pgrep anymore — systemd owns all three. Structured logs available via `journalctl --user -u <service>`.
 
-### 3. Attach Monitor to bot event stream
+### 3. Attach Monitor to bot event stream (only if none already attached)
 
-The bot writes raw IRC traffic to `/home/vjt/code/IRC/vjt-claude/bot.log` with direction markers (`<` = inbound from server, `>` = outbound to server). Attach one persistent Monitor that tails bot.log and emits only the inbound events we care about:
+**Check first, don't duplicate.** `/start` is idempotent and may be re-run after a watchdog-triggered `/clear` or a manual re-invocation. Two Monitors tailing the same log = every event fires twice (or 4×, etc — they stack). Check **both** sources before attaching — a pipeline surviving a scrub won't appear in TaskList:
+
+1. **TaskList** — catches mid-session re-invoke. Look for a running task whose command contains `/home/vjt/code/IRC/vjt-claude/bot.log`. If found with status `running`/`in_progress`, reuse it and report its id.
+2. **`pgrep -af "tail -F.*vjt-claude/bot.log"`** — catches a surviving pipeline from the pre-scrub session. After `/clear` the Monitor task registration is gone (new session's TaskList is empty) but the `tail … | grep …` shell pipeline is still alive and still delivering events here. If pgrep finds a hit, **skip attach** — adopt it, note `existing monitor adopted (pid <n>)` in the status line.
+
+**If TaskList shows multiple live Monitors on the same log** (pre-existing duplication from earlier buggy runs or compaction-survived stragglers): stop all but the newest with `TaskStop`, then continue with the survivor. Report the cleanup in the status line.
+
+**If TaskList shows a dead/stopped Monitor** (status `failed`, `stopped`, `completed`): start a fresh one. Don't try to resurrect the old id.
+
+Only if all sources are clean: attach a fresh Monitor.
+
+The bot writes raw IRC traffic to `/home/vjt/code/IRC/vjt-claude/bot.log` with direction markers (`<` = inbound from server, `>` = outbound to server). One persistent Monitor that tails bot.log and emits only the inbound events we care about:
 
 ```
 Monitor:
