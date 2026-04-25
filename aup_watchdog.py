@@ -39,11 +39,16 @@ DEBOUNCE_SEC = 30           # any clear — AUP / idle / turns — holds this wi
 IDLE_SEC = 600              # 10 min of no jsonl writes = idle
 MAX_TURNS = 100             # assistant turns since last clear → eager clear
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
-POST_CLEAR_WAIT = 10        # seconds for /clear to settle before scrub prompt (Pi is slow)
+POST_CLEAR_WAIT = 3         # seconds for /clear to settle before scrub prompt (capture-verify + retries cover Ink race)
 SCRUB_VERIFY_TRIES = 4      # retries if paste didn't land in input
 SCRUB_VERIFY_GAP = 3        # seconds between verify retries
 RESOLVE_ALERT_SEC = 300     # consecutive resolve failures before IRC escalation
 LOG_DEDUP_SEC = 60          # collapse identical consecutive log lines for this long
+IDLE_MIN_TURNS = 30         # skip IDLE fire unless this many assistant turns accumulated
+                            # since last clear — post-scrub /start bootstrap alone
+                            # produces ~10-20 turns; firing IDLE off a mere
+                            # post-bootstrap lull cycles /clear forever on sessions
+                            # that are just waiting for their next IRC message.
 
 SCRUB_PROMPT = "/start"
 
@@ -383,10 +388,11 @@ def main() -> int:
                     fired_this_tick = True
 
             # --- Idle trigger: jsonl quiet + no pending tool_use ---
-            # `mtime > last_fire` gates on evidence that CC actually processed
-            # the previous /clear (wrote at least one line after it). Without
-            # this, a stuck pane never advances mtime → age stays huge → every
-            # DEBOUNCE_SEC fires another /clear → clears pile up in CC's input.
+            # Gated on IDLE_MIN_TURNS so a post-scrub /start bootstrap lull
+            # doesn't keep cycling /clear on sessions that are legitimately
+            # waiting for their next IRC message. The bootstrap skill alone
+            # produces ~10-20 assistant turns; demand real ongoing work
+            # before IDLE is allowed to fire.
             if not fired_this_tick:
                 age = now - current_file.stat().st_mtime
                 boot_age = now - boot_ts
@@ -394,7 +400,7 @@ def main() -> int:
                     age >= IDLE_SEC
                     and boot_age >= IDLE_SEC
                     and now - last_fire >= DEBOUNCE_SEC
-                    and current_file.stat().st_mtime > last_fire
+                    and turns_since_clear >= IDLE_MIN_TURNS
                 ):
                     if has_pending_tool_use(tail_lines(current_file)):
                         log(f"idle {int(age)}s but pending tool_use — skipping")
