@@ -35,10 +35,13 @@ BOT_FIFO = Path("/home/vjt/code/IRC/vjt-claude/bot.send")
 ESCALATE_NICK = "vjt"        # SAY target when resolve stays broken
 
 POLL_SEC = 2
-DEBOUNCE_SEC = 30           # any clear — AUP / idle / turns — holds this window
+DEBOUNCE_SEC = 60           # any clear — AUP / idle / turns — holds this window
+                            # (must be ≥ PRE_CLEAR_WARN_SEC + POST_CLEAR_WAIT + buffer)
 IDLE_SEC = 600              # 10 min of no jsonl writes = idle
 MAX_TURNS = 100             # assistant turns since last clear → eager clear
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
+PRE_CLEAR_WARN_SEC = 15     # grace window between warning prompt and /clear
+                            # so Claude can persist in-flight state to disk
 POST_CLEAR_WAIT = 3         # seconds for /clear to settle before scrub prompt (capture-verify + retries cover Ink race)
 SCRUB_VERIFY_TRIES = 4      # retries if paste didn't land in input
 SCRUB_VERIFY_GAP = 3        # seconds between verify retries
@@ -51,6 +54,15 @@ IDLE_MIN_TURNS = 30         # skip IDLE fire unless this many assistant turns ac
                             # that are just waiting for their next IRC message.
 
 SCRUB_PROMPT = "/start"
+
+PRE_CLEAR_PROMPT = (
+    "WATCHDOG NOTICE: a /clear will fire in 15 seconds. "
+    "Persist any in-flight conversational state to disk NOW: "
+    "pending IRC requests, messages-to-relay, partial work, "
+    "new standing orders, lessons learned. "
+    "Use memory/ for long-term, project_activity_log.md for ephemera. "
+    "Do not reply on IRC unless mid-sentence. Write only."
+)
 
 STUCK_PATTERNS = re.compile(
     r"(unable to respond to this request|appears to violate our Usage Policy|Usage Policy)",
@@ -138,6 +150,27 @@ def inject_clear(pane: str) -> bool:
         return True
     except subprocess.CalledProcessError as e:
         log(f"tmux send-keys failed on {pane}: {e}")
+        return False
+
+
+def inject_pre_clear_warning(pane: str) -> bool:
+    """Best-effort: tell Claude a /clear is imminent so it can persist
+    in-flight state to disk before the buffer is wiped. No verify — if
+    the keys don't land, /clear still fires; we lose the warning, not
+    the system. send-keys -l + Enter, same pattern as inject_scrub but
+    without the capture-pane retry loop (a missed warning is less bad
+    than a missed scrub: the scrub keeps the activity-log trim chain
+    going, the warning is opportunistic)."""
+    try:
+        subprocess.check_call(
+            ["tmux", "send-keys", "-t", pane, "-l", PRE_CLEAR_PROMPT]
+        )
+        subprocess.check_call(
+            ["tmux", "send-keys", "-t", pane, "Enter"]
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        log(f"pre-clear warning send-keys failed on {pane}: {e}")
         return False
 
 
@@ -298,6 +331,9 @@ def fire_clear(reason: str) -> bool:
         )
     _resolve_state["fail_since"] = 0.0
     _resolve_state["alerted"] = False
+    log(f"{reason} → pre-clear warning into {pane}, sleeping {PRE_CLEAR_WARN_SEC}s")
+    inject_pre_clear_warning(pane)
+    time.sleep(PRE_CLEAR_WARN_SEC)
     log(f"{reason} → injecting /clear into {pane}")
     if not inject_clear(pane):
         return False
