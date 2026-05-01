@@ -57,14 +57,14 @@ Monitor:
   timeout_ms: 3600000
   command: |
     tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.log | \
-      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|NICK|INVITE|NOTICE|MODE) '
+      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|NICK|INVITE|NOTICE|MODE|4[0-9][0-9]) '
 ```
 
 **Filter semantics — important:**
 
 - `' < :'` anchors on **inbound** lines only. Outbound (`' > '`) lines are my own IRC sends — echoing them back creates a self-confirmation feedback loop. Never tail outbound.
 - The `:[^ ]+` group eats the `:nick!user@host` source prefix before the verb, so server-notice lines (`< PING :server`) which lack a source are intentionally excluded — they're noise.
-- Verb alternation: PRIVMSG, JOIN, PART, QUIT, INVITE, NOTICE, MODE. MODE is in so I can track who had `+o` in-session (enables re-opping returning ops while vjt is away, per `project_vjt_proxy_on_away.md`). TOPIC and 3-digit numerics stay out — rarely actionable, bloats notifications.
+- Verb alternation: PRIVMSG, JOIN, PART, QUIT, INVITE, NOTICE, MODE, plus `4XX` numeric error replies (401 No such nick/channel, 403 No such channel, 404 Cannot send, 432/433/437 nick errors, 442/443 channel-membership errors, 471/473/474/475 join failures, 482 need ops, etc.). MODE is in so I can track who had `+o` in-session (enables re-opping returning ops while vjt is away, per `project_vjt_proxy_on_away.md`). 4XX added 2026-05-01 after a `SAY vjt` (while he was away as `vjt\`zZzZ`) silently 401'd — without this, send-failures were invisible. TOPIC and 2xx/3xx/5xx numerics stay out — rarely actionable, bloats notifications.
 - `--line-buffered` is mandatory on grep — without it, pipe buffering delays events by minutes.
 - `tail -F` (capital F) survives log rotation. Use `-n 0` so we don't replay history on attach.
 
