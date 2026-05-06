@@ -376,7 +376,7 @@ def handle_server_line(line):
             return
         host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
         trusted, reason = trust_check(nick, host)
-        trust = nick if trusted else "other"
+        trust = "TRUSTED" if trusted else "UNTRUSTED"
         emit("MSG", trust, nick, target, body)
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
