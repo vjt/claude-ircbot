@@ -10,8 +10,9 @@ WorkingDirectory=/home/vjt/code/IRC/vjt-claude
 ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/bot.py
 Restart=always
 RestartSec=30
-StartLimitBurst=5
-StartLimitIntervalSec=300
+RestartSteps=5
+RestartMaxDelaySec=1800
+StartLimitBurst=0
 StandardOutput=append:/home/vjt/code/IRC/vjt-claude/bot.stdout.log
 StandardError=inherit
 
