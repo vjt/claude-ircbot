@@ -52,19 +52,19 @@ The bot writes raw IRC traffic to `/home/vjt/code/IRC/vjt-claude/bot.log` with d
 
 ```
 Monitor:
-  description: "IRC bot events (msgs, invites, errors, trust)"
+  description: "IRC bot events (msgs+trust, invites, errors)"
   persistent: true
   timeout_ms: 3600000
   command: |
-    tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.log | \
-      grep --line-buffered -E ' < :[^ ]+ (PRIVMSG|JOIN|PART|QUIT|NICK|INVITE|NOTICE|MODE|4[0-9][0-9]) '
+    tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.stdout.log | \
+      grep --line-buffered -E '^(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR) '
 ```
 
 **Filter semantics — important:**
 
-- `' < :'` anchors on **inbound** lines only. Outbound (`' > '`) lines are my own IRC sends — echoing them back creates a self-confirmation feedback loop. Never tail outbound.
-- The `:[^ ]+` group eats the `:nick!user@host` source prefix before the verb, so server-notice lines (`< PING :server`) which lack a source are intentionally excluded — they're noise.
-- Verb alternation: PRIVMSG, JOIN, PART, QUIT, INVITE, NOTICE, MODE, plus `4XX` numeric error replies (401 No such nick/channel, 403 No such channel, 404 Cannot send, 432/433/437 nick errors, 442/443 channel-membership errors, 471/473/474/475 join failures, 482 need ops, etc.). MODE is in so I can track who had `+o` in-session (enables re-opping returning ops while vjt is away, per `project_vjt_proxy_on_away.md`). 4XX added 2026-05-01 after a `SAY vjt` (while he was away as `vjt\`zZzZ`) silently 401'd — without this, send-failures were invisible. TOPIC and 2xx/3xx/5xx numerics stay out — rarely actionable, bloats notifications.
+- **Source = `bot.stdout.log` (bot's own emit() stream), NOT `bot.log` (raw IRC traffic).** This was changed 2026-05-06 after vjt's security audit: `bot.log` is direction-marked socket bytes with no trust info, while `bot.stdout.log` carries `MSG TRUSTED|UNTRUSTED <nick> <target> <body>` so I see the auth verdict on every line. Tailing the wrong stream made me trust-blind for an entire session — that bug led me to run `uname -a` for a `vjt-grappa@retail.tim.it` DM that was UNTRUSTED. Never go back to bot.log for the live decision stream.
+- Each line is one bot event, anchored at start with the verb. `MSG` carries trust verdict in field 1 (`TRUSTED` or `UNTRUSTED`) — refuse host-level commands when `UNTRUSTED`.
+- Verb whitelist covers everything actionable: chat (MSG/NOTICE/CTCP), membership (JOIN/PART/QUIT/NICK_CHANGE/KICK/INVITE), housekeeping (IDLE), failures (IRC_ERROR/TRUST_DENIED/NICK_ERROR/AUTH_ERROR/NS_IDENTIFY_FAIL/SERVER_ERROR). Excluded by design: WHOIS_FIRED, VERIFIED, NOT_REGISTERED, TRUST_LOADED/RESET, STARTUP_*, FIFO_READY, TLS_OK, CONNECTED, DISCONNECTED, NS_IDENTIFY_SENT, ERROR (transport/cmd parse errors) — these are diagnostics, not actionable. Add back if a real need surfaces.
 - `--line-buffered` is mandatory on grep — without it, pipe buffering delays events by minutes.
 - `tail -F` (capital F) survives log rotation. Use `-n 0` so we don't replay history on attach.
 
