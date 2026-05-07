@@ -40,7 +40,7 @@ Nothing to mkfifo / nohup / pgrep anymore — systemd owns all three. Structured
 **Check first, don't duplicate.** `/start` is idempotent and may be re-run after a watchdog-triggered `/clear` or a manual re-invocation. Two Monitors tailing the same log = every event fires twice (or 4×, etc — they stack). Check **both** sources before attaching — a pipeline surviving a scrub won't appear in TaskList:
 
 1. **TaskList** — catches mid-session re-invoke. Look for a running task whose command contains `/home/vjt/code/IRC/vjt-claude/bot.log`. If found with status `running`/`in_progress`, reuse it and report its id.
-2. **`pgrep -af "tail -F.*vjt-claude/bot.log"`** — catches a surviving pipeline from the pre-scrub session. After `/clear` the Monitor task registration is gone (new session's TaskList is empty) but the `tail … | grep …` shell pipeline is still alive and still delivering events here. If pgrep finds a hit, **skip attach** — adopt it, note `existing monitor adopted (pid <n>)` in the status line.
+2. **`pgrep -af "tail -F.*vjt-claude/bot.stdout.log"`** — catches a surviving pipeline from the pre-scrub session. After `/clear` the Monitor task registration is gone (new session's TaskList is empty) but the `tail … | grep …` shell pipeline launched by `start-monitor.sh` is still alive and still delivering events here. If pgrep finds a hit, **skip attach** — adopt it, note `existing monitor adopted (pid <n>)` in the status line. Heads-up: a tail on the wrong log (`bot.log` rather than `bot.stdout.log`) is a stale orphan from before the 2026-05-06 source switch — kill it.
 
 **If TaskList shows multiple live Monitors on the same log** (pre-existing duplication from earlier buggy runs or compaction-survived stragglers): stop all but the newest with `TaskStop`, then continue with the survivor. Report the cleanup in the status line.
 
@@ -48,16 +48,14 @@ Nothing to mkfifo / nohup / pgrep anymore — systemd owns all three. Structured
 
 Only if all sources are clean: attach a fresh Monitor.
 
-The bot writes raw IRC traffic to `/home/vjt/code/IRC/vjt-claude/bot.log` with direction markers (`<` = inbound from server, `>` = outbound to server). One persistent Monitor that tails bot.log and emits only the inbound events we care about:
+The bot writes its curated event stream to `/home/vjt/code/IRC/vjt-claude/bot.stdout.log` (already trust-tagged per chat line). Attach a single persistent Monitor that runs the helper script `start-monitor.sh` — it owns the `stdbuf -oL tail -F | grep --line-buffered` pipeline so behavior stays consistent across sessions and is editable in one place:
 
 ```
 Monitor:
   description: "IRC bot events (msgs+trust, invites, errors)"
   persistent: true
   timeout_ms: 3600000
-  command: |
-    tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.stdout.log | \
-      grep --line-buffered -E '^(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR) '
+  command: bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor.sh
 ```
 
 **Filter semantics — important:**
