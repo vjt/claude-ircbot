@@ -324,7 +324,7 @@ def handle_server_line(line):
             elif any(k in low for k in ("incorrect", "invalid", "failed", "errata", "errato")):
                 emit("NS_IDENTIFY_FAIL", msg)
         if nick and nick.lower() != NICK.lower():
-            emit("NOTICE", nick, tgt, msg)
+            emit("NOTICE", f"FROM={nick}", f"TO={tgt}", f"BODY={msg}")
         return
     if cmd == "INVITE":
         parts = rest.split(" :", 1)
@@ -368,7 +368,7 @@ def handle_server_line(line):
         body = parts[1] if len(parts) > 1 else ""
         if body.startswith("\x01") and body.endswith("\x01"):
             ctcp = body.strip("\x01")
-            emit("CTCP", nick, target, ctcp)
+            emit("CTCP", f"FROM={nick}", f"TO={target}", f"BODY={ctcp}")
             if ctcp.upper() == "VERSION":
                 send_raw(f"NOTICE {nick} :\x01VERSION claude-code PoC\x01")
             elif ctcp.upper().startswith("PING"):
@@ -377,7 +377,7 @@ def handle_server_line(line):
         host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
         trusted, reason = trust_check(nick, host)
         trust = "TRUSTED" if trusted else "UNTRUSTED"
-        emit("MSG", trust, nick, target, body)
+        emit("MSG", trust, f"FROM={nick}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
         # Re-arm the idle timer only on HUMAN PRIVMSG to a tracked channel.
