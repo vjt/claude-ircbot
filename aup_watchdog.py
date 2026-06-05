@@ -37,6 +37,11 @@ ESCALATE_NICK = "vjt"        # SAY target when resolve stays broken
 POLL_SEC = 2
 DEBOUNCE_SEC = 60           # any clear — AUP / idle / turns — holds this window
                             # (must be ≥ PRE_CLEAR_WARN_SEC + POST_CLEAR_WAIT + buffer)
+IDLE_ENABLED = False        # idle trigger disabled 2026-06-05: clearing on quiet
+                            # pays a full /start cycle (re-read CLAUDE.md/MEMORY/
+                            # activity-log + scrub + sweep) to drop context that,
+                            # while idle, costs zero tokens. Turns guards real
+                            # bloat; AUP + SIGUSR1 cover recovery.
 IDLE_SEC = 600              # 10 min of no jsonl writes = idle
 MAX_TURNS = 100             # assistant turns since last clear → eager clear
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
@@ -429,7 +434,7 @@ def main() -> int:
             # waiting for their next IRC message. The bootstrap skill alone
             # produces ~10-20 assistant turns; demand real ongoing work
             # before IDLE is allowed to fire.
-            if not fired_this_tick:
+            if IDLE_ENABLED and not fired_this_tick:
                 age = now - current_file.stat().st_mtime
                 boot_age = now - boot_ts
                 if (
