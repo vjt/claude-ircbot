@@ -12,10 +12,14 @@ Brings up everything needed for the persistent IRC session. Idempotent: safe to 
 
 ### 1. Memory housekeeping
 
-- Read `~/.claude/projects/-home-vjt-code-IRC-vjt-claude/memory/project_activity_log.md`.
-- Compare each `### YYYY-MM-DD` heading against `currentDate` from the environment context.
-- **Delete every day-heading + bullets older than 14 days**, in place (Edit tool). Do NOT migrate them anywhere — they are ephemera by design.
-- If today's heading doesn't exist, add it at the bottom (empty, ready to receive bullets).
+**Never full-read the activity log.** It can be hundreds of KB (fat lines accrue), and a full Read burns input tokens for nothing — the trim only needs heading positions and a boundary. The file is NOT auto-loaded into context (MEMORY.md holds only a one-line pointer), so this read is the only place that burns it. Keep it cheap:
+
+- `grep -nE '^### [0-9]{4}-[0-9]{2}-[0-9]{2}' .../memory/project_activity_log.md` — lists every `### YYYY-MM-DD` heading with its line number. Cheap, gives the whole skeleton.
+- Compare each heading against `currentDate` from the environment context.
+- **Trim every day-heading + bullets older than 14 days.** Per `feedback_archive_dont_delete`, move them to `project_activity_log_archive.md` (read-on-demand, not in MEMORY.md) rather than discarding. Only read the body of the days being trimmed (use `Read` with `offset`/`limit` around their line range) — never the whole file.
+- If today's heading doesn't exist, append it at the bottom (empty, ready to receive bullets) — a targeted Edit on the last heading or an append, no full read.
+
+Common case (all headings ≤14d): grep shows nothing to trim, you just ensure today's heading exists. Zero body reads.
 
 ### 2. Ensure all three services are up (systemd --user)
 
