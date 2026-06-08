@@ -116,7 +116,10 @@ def idle_ticker_loop() -> None:
 
 
 def emit(kind, *parts):
-    print(kind + " " + " ".join(str(p) for p in parts), flush=True)
+    # [HH:MM] prefix gives the Monitor/Claude a real time anchor per event
+    # instead of extrapolating elapsed time from turn order (vjt 2026-06-07).
+    # No seconds by request. start-monitor.sh's grep tolerates this prefix.
+    print(f"[{time.strftime('%H:%M')}] " + kind + " " + " ".join(str(p) for p in parts), flush=True)
 
 
 def load_trust():
