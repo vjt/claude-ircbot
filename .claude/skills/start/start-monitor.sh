@@ -17,5 +17,7 @@
 # tail -F (capital F) survives log rotation; -n 0 skips replaying history on
 # attach.
 
+# emit() prefixes each line with [HH:MM] (vjt 2026-06-07, time anchor) — the
+# optional `\[..:..\] ` group below tolerates it while keeping the verb anchor.
 stdbuf -oL tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.stdout.log | \
-  grep --line-buffered -E '^(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR) '
+  grep --line-buffered -E '^(\[[0-9]{2}:[0-9]{2}\] )?(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR) '
