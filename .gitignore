@@ -27,3 +27,6 @@ refs/
 tmp/
 *.lock
 
+# Host-local automation helpers (cron scripts + their logs) — not for public repo
+tools/
+
