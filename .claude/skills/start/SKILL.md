@@ -18,8 +18,9 @@ Brings up everything needed for the persistent IRC session. Idempotent: safe to 
 - Compare each heading against `currentDate` from the environment context.
 - **Trim every day-heading + bullets older than 14 days.** Per `feedback_archive_dont_delete`, move them to `project_activity_log_archive.md` (read-on-demand, not in MEMORY.md) rather than discarding. Only read the body of the days being trimmed (use `Read` with `offset`/`limit` around their line range) — never the whole file.
 - If today's heading doesn't exist, append it at the bottom (empty, ready to receive bullets) — a targeted Edit on the last heading or an append, no full read.
+- **Always read TODAY's heading body in full** (use `Read` with `offset` at today's heading line from the grep, to EOF — it's one day of bullets, cheap). This is the post-`/clear` seeding step: CLAUDE.md + MEMORY.md auto-load but the activity-log body does NOT, so today's events, in-flight threads, and `PENDING`/`DA FARE` markers reach you ONLY through this read. Skipping it = waking up blind to what happened today (the 2026-06-06 `tb517` fabrication + cicchetto/conte misread incidents — see `feedback_check_pending_log_on_start`). If yesterday's heading is recent and today's is thin, read it too.
 
-Common case (all headings ≤14d): grep shows nothing to trim, you just ensure today's heading exists. Zero body reads.
+Common case (all headings ≤14d): grep shows nothing to trim; you ensure today's heading exists and read today's body to seed context. The only mandatory body read is today's — never the whole file.
 
 ### 2. Ensure all three services are up (systemd --user)
 
