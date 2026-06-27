@@ -448,7 +448,7 @@ def writer_loop():
                 try:
                     process_cmd(line)
                 except Exception as e:
-                    emit("ERROR", "cmd-fail", repr(e), line[:80])
+                    emit("CMD_ERROR", "cmd-fail", repr(e), line[:80])
 
 
 def process_cmd(line):
@@ -459,14 +459,20 @@ def process_cmd(line):
     verb = verb.upper()
     if verb == "SAY":
         if " " not in rest:
-            emit("ERROR", "SAY needs <target> <text>")
+            emit("CMD_ERROR", "SAY needs <target> <text>", repr(rest))
             return
         target, text = rest.split(" ", 1)
         split_say(target, text)
     elif verb == "ACT":
+        if " " not in rest:
+            emit("CMD_ERROR", "ACT needs <target> <text>", repr(rest))
+            return
         target, text = rest.split(" ", 1)
         send_raw(f"PRIVMSG {target} :\x01ACTION {text}\x01")
     elif verb == "NOTICE":
+        if " " not in rest:
+            emit("CMD_ERROR", "NOTICE needs <target> <text>", repr(rest))
+            return
         target, text = rest.split(" ", 1)
         send_raw(f"NOTICE {target} :{text}")
     elif verb == "JOIN":
@@ -480,7 +486,8 @@ def process_cmd(line):
     elif verb == "RAW":
         send_raw(rest)
     else:
-        emit("ERROR", "unknown-cmd", verb)
+        emit("CMD_ERROR", "unknown-verb", repr(verb),
+             "valid: SAY ACT NOTICE JOIN PART WHOIS QUIT RAW")
 
 
 def main():
