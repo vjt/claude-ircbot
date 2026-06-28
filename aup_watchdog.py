@@ -37,13 +37,15 @@ ESCALATE_NICK = "vjt"        # SAY target when resolve stays broken
 POLL_SEC = 2
 DEBOUNCE_SEC = 60           # any clear — AUP / idle / turns — holds this window
                             # (must be ≥ PRE_CLEAR_WARN_SEC + POST_CLEAR_WAIT + buffer)
-IDLE_ENABLED = False        # idle trigger disabled 2026-06-05: clearing on quiet
+IDLE_ENABLED = True         # idle trigger re-enabled 2026-06-28 per vjt (was disabled
+                            # 2026-06-05). History of the disable rationale below:
+                            # idle trigger disabled 2026-06-05: clearing on quiet
                             # pays a full /start cycle (re-read CLAUDE.md/MEMORY/
                             # activity-log + scrub + sweep) to drop context that,
                             # while idle, costs zero tokens. Turns guards real
                             # bloat; AUP + SIGUSR1 cover recovery.
-IDLE_SEC = 600              # 10 min of no jsonl writes = idle
-MAX_TURNS = 100             # assistant turns since last clear → eager clear
+IDLE_SEC = 900              # 15 min of no jsonl writes = idle (1.5x, 2026-06-28)
+MAX_TURNS = 150             # assistant turns since last clear → eager clear (1.5x, 2026-06-28)
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
 PRE_CLEAR_WARN_SEC = 15     # grace window between warning prompt and /clear
                             # so Claude can persist in-flight state to disk
@@ -58,7 +60,7 @@ IDLE_MIN_TURNS = 30         # skip IDLE fire unless this many assistant turns ac
                             # post-bootstrap lull cycles /clear forever on sessions
                             # that are just waiting for their next IRC message.
 
-SCRUB_PROMPT = "/start"
+SCRUB_PROMPT = "/resume"  # warm-resume skill (lean); cold boot still uses /start
 
 PRE_CLEAR_PROMPT = (
     "WATCHDOG NOTICE: a /clear will fire in 15 seconds. "
@@ -164,8 +166,8 @@ def inject_pre_clear_warning(pane: str) -> bool:
     the keys don't land, /clear still fires; we lose the warning, not
     the system. send-keys -l + Enter, same pattern as inject_scrub but
     without the capture-pane retry loop (a missed warning is less bad
-    than a missed scrub: the scrub keeps the activity-log trim chain
-    going, the warning is opportunistic)."""
+    than a missed scrub: the scrub (/resume) reseeds the post-clear
+    session from today's activity-log body, the warning is opportunistic)."""
     try:
         subprocess.check_call(
             ["tmux", "send-keys", "-t", pane, "-l", PRE_CLEAR_PROMPT]
