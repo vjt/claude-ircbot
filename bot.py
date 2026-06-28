@@ -203,27 +203,30 @@ def send_raw(s):
 
 
 def split_say(target, text):
-    words = text.split(" ")
-    cur = ""
-    out = []
-    for w in words:
-        candidate = (cur + " " + w).strip() if cur else w
-        if len(candidate.encode("utf-8")) > MAX_BODY:
-            if cur:
-                out.append(cur)
-                cur = w
-            else:
-                b = w.encode("utf-8")
-                while len(b) > MAX_BODY:
-                    out.append(b[:MAX_BODY].decode("utf-8", errors="ignore"))
-                    b = b[MAX_BODY:]
-                cur = b.decode("utf-8", errors="ignore")
+    """Send text as one or more PRIVMSGs, preserving whitespace verbatim.
+
+    Lines that fit in MAX_BODY go out untouched, so ascii art keeps its
+    indentation and internal spacing (#86). Longer lines wrap at the last
+    space before the limit WITHOUT stripping or collapsing spaces; a single
+    oversized word is hard-split on a utf-8 char boundary.
+    """
+    b = text.encode("utf-8")
+    if len(b) <= MAX_BODY:
+        send_raw(f"PRIVMSG {target} :{text}")
+        return
+    while b:
+        if len(b) <= MAX_BODY:
+            send_raw(f"PRIVMSG {target} :{b.decode('utf-8', errors='ignore')}")
+            return
+        cut = b.rfind(b" ", 1, MAX_BODY + 1)
+        if cut <= 0:
+            cut = MAX_BODY
+            while cut > 1 and (b[cut] & 0xC0) == 0x80:
+                cut -= 1
         else:
-            cur = candidate
-    if cur:
-        out.append(cur)
-    for chunk in out:
-        send_raw(f"PRIVMSG {target} :{chunk}")
+            cut += 1  # keep the breaking space on this chunk, don't strip it
+        send_raw(f"PRIVMSG {target} :{b[:cut].decode('utf-8', errors='ignore')}")
+        b = b[cut:]
 
 
 def run_startup():
