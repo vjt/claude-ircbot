@@ -20,6 +20,8 @@ Brings up the persistent IRC session from a fresh `claude` launch. **This is the
 
 This >14d archive sweep is the one thing `/resume` deliberately skips (the log is read-on-demand, so an untrimmed log costs zero per-clear tokens — it's disk hygiene, not token hygiene). That's why it lives here, on the cold path, not in the hot path. The today's-heading reseed is NOT done here — it's part of the shared protocol (section 4), so it isn't done twice.
 
+**Then lint the memory index (cold-only):** run `bash memory/check-index.sh`. It reports MEMORY.md byte budget, over-length index lines, dead pointers, and true orphans (files neither indexed nor `[[linked]]`). If it flags anything, fix per `feedback_memory_anti_clutter` — trim fat descriptions to hooks, group rosters into one pointer, index/link orphans. MEMORY.md is auto-loaded every session and the loader truncates it past ~24.4KB, so keeping it lean is what stops silent index loss.
+
 ## 2. Ensure all three services are up — systemd --user (cold-only)
 
 As of 2026-04-20 **bot.py plus both sidecars** run as systemd user services with `loginctl enable-linger vjt`, so they auto-start at boot, auto-restart on crash, decoupled from Claude Code lifecycle.
