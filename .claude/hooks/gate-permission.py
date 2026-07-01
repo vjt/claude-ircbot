@@ -68,7 +68,17 @@ def rule_matches(rule, tool, tool_input):
     inner = rule[len(prefix):-1]
 
     if tool in ("Read", "Edit", "Write", "NotebookEdit"):
-        return fnmatch.fnmatchcase(tool_input.get("file_path", ""), inner)
+        raw = tool_input.get("file_path", "")
+        # Match raw path AND its realpath: the memory dir is reached via a
+        # symlink (~/.claude/projects/.../memory -> repo/memory), and the
+        # injected memory-prompt hands us the symlink form. Without this, a
+        # rule written against the canonical path misses, the gate denies,
+        # and the self-allow cascade edits settings.local.json — which trips
+        # CC's native settings-edit prompt and blocks the headless session.
+        cands = {raw}
+        if raw:
+            cands.add(os.path.realpath(raw))
+        return any(fnmatch.fnmatchcase(c, inner) for c in cands)
 
     if tool == "Bash":
         return fnmatch.fnmatchcase(tool_input.get("command", ""), inner)
