@@ -21,6 +21,8 @@ import ssl
 import sys
 import threading
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 HOST = "irc.azzurra.chat"
 PORT = 6697
@@ -34,6 +36,16 @@ FIFO = os.path.join(HERE, "bot.send")
 TRUST_FILE = os.path.join(HERE, "bot.trust")
 ENV_FILE = os.path.join(HERE, ".env")
 STARTUP_FILE = os.path.join(HERE, "bot.startup")
+
+# Wall-clock timestamps in Europe/Rome (CET/CEST, DST-aware) instead of the
+# host's UTC. bot.log + the event stream were UTC until 2026-07-02, when vjt
+# asked for Italian local time. Explicit zoneinfo so it stays correct whatever
+# the host TZ is (pi5 runs UTC).
+_TZ = ZoneInfo("Europe/Rome")
+
+
+def _now(fmt):
+    return datetime.now(_TZ).strftime(fmt)
 
 
 def load_env():
@@ -119,7 +131,7 @@ def emit(kind, *parts):
     # [HH:MM] prefix gives the Monitor/Claude a real time anchor per event
     # instead of extrapolating elapsed time from turn order (vjt 2026-06-07).
     # No seconds by request. start-monitor.sh's grep tolerates this prefix.
-    print(f"[{time.strftime('%H:%M')}] " + kind + " " + " ".join(str(p) for p in parts), flush=True)
+    print(f"[{_now('%H:%M')}] " + kind + " " + " ".join(str(p) for p in parts), flush=True)
 
 
 def load_trust():
@@ -188,7 +200,7 @@ def _mask_secrets(line):
 def log(direction, line):
     try:
         with open(LOG, "a") as f:
-            f.write(f"{time.strftime('%H:%M:%S')} {direction} {_mask_secrets(line)}\n")
+            f.write(f"{_now('%H:%M:%S')} {direction} {_mask_secrets(line)}\n")
     except Exception:
         pass
 
