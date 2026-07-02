@@ -282,6 +282,12 @@ def handle_server_line(line):
         return
     prefix, cmd, rest = m.groups()
     nick = prefix.split("!")[0] if prefix else ""
+    # Host from the source prefix (nick!user@host). Computed once so EVERY
+    # emitted event can carry HOST= — the Monitor must never be host-blind on a
+    # JOIN/NICK the way it was when a *.diostronzo.org flooder spoofed nick
+    # `vjt_` and only the raw bot.log (not the event stream) revealed it wasn't
+    # vjt's trust host *.openssl.it (vjt 2026-07-02).
+    host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
     rest = rest or ""
 
     if cmd == "001":
@@ -342,14 +348,13 @@ def handle_server_line(line):
             elif any(k in low for k in ("incorrect", "invalid", "failed", "errata", "errato")):
                 emit("NS_IDENTIFY_FAIL", msg)
         if nick and nick.lower() != NICK.lower():
-            emit("NOTICE", f"FROM={nick}", f"TO={tgt}", f"BODY={msg}")
+            emit("NOTICE", f"FROM={nick}", f"HOST={host}", f"TO={tgt}", f"BODY={msg}")
         return
     if cmd == "INVITE":
         parts = rest.split(" :", 1)
         target_chan = parts[1] if len(parts) == 2 else rest.split()[-1]
-        host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
         trusted, reason = trust_check(nick, host)
-        emit("INVITE", nick, target_chan, "trusted" if trusted else f"untrusted:{reason}")
+        emit("INVITE", nick, f"HOST={host}", target_chan, "trusted" if trusted else f"untrusted:{reason}")
         if trusted:
             send_raw(f"JOIN {target_chan}")
         return
@@ -360,7 +365,7 @@ def handle_server_line(line):
         kick_chan = head[0] if head else ""
         kick_target = head[1] if len(head) > 1 else ""
         kick_reason = kick_parts[1] if len(kick_parts) > 1 else ""
-        emit("KICK", nick, kick_chan, kick_target, kick_reason)
+        emit("KICK", nick, f"HOST={host}", kick_chan, kick_target, kick_reason)
         if kick_chan and kick_target.lower() == NICK.lower():
             # Auto-rejoin with kick-flood backoff. Repeated kicks in a short
             # window = a hostile op. Walk away rather than trigger Excess Flood.
@@ -386,16 +391,15 @@ def handle_server_line(line):
         body = parts[1] if len(parts) > 1 else ""
         if body.startswith("\x01") and body.endswith("\x01"):
             ctcp = body.strip("\x01")
-            emit("CTCP", f"FROM={nick}", f"TO={target}", f"BODY={ctcp}")
+            emit("CTCP", f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={ctcp}")
             if ctcp.upper() == "VERSION":
                 send_raw(f"NOTICE {nick} :\x01VERSION claude-code PoC\x01")
             elif ctcp.upper().startswith("PING"):
                 send_raw(f"NOTICE {nick} :\x01{ctcp}\x01")
             return
-        host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
         trusted, reason = trust_check(nick, host)
         trust = "TRUSTED" if trusted else "UNTRUSTED"
-        emit("MSG", trust, f"FROM={nick}", f"TO={target}", f"BODY={body}")
+        emit("MSG", trust, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
         # Re-arm the idle timer only on HUMAN PRIVMSG to a tracked channel.
@@ -404,19 +408,19 @@ def handle_server_line(line):
             _arm_idle(target)
         return
     if cmd == "JOIN":
-        emit("JOIN", nick, rest.lstrip(":"))
+        emit("JOIN", nick, f"HOST={host}", rest.lstrip(":"))
         return
     if cmd == "PART":
-        emit("PART", nick, rest)
+        emit("PART", nick, f"HOST={host}", rest)
         trust_reset(nick, "part")
         return
     if cmd == "QUIT":
-        emit("QUIT", nick, rest)
+        emit("QUIT", nick, f"HOST={host}", rest)
         trust_reset(nick, "quit")
         return
     if cmd == "NICK":
         new_nick = rest.lstrip(":")
-        emit("NICK_CHANGE", nick, new_nick)
+        emit("NICK_CHANGE", nick, f"HOST={host}", new_nick)
         trust_reset(nick, "nick-change")
         return
     if cmd == "ERROR":
