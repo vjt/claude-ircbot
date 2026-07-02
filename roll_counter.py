@@ -2,9 +2,15 @@
 import json, re, glob, subprocess, sys, time, os
 from pathlib import Path
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 
 STATE = Path("/home/vjt/code/IRC/vjt-claude/rolls.json")
 LOG = "/home/vjt/code/IRC/vjt-claude/bot.log"
+
+# bot.py stamps bot.log in Europe/Rome local time (CET/CEST) since 2026-07-02;
+# earlier lines were UTC. The live daemon uses time.time() so it's TZ-agnostic;
+# only backfill() parses these stamps, so it interprets them in this zone.
+_TZ = ZoneInfo("Europe/Rome")
 
 # Parse "HH:MM:SS " prefix that bot.py stamps at start of each log line.
 LOG_TS_PAT = re.compile(r'^(\d{2}):(\d{2}):(\d{2})\s')
@@ -250,12 +256,14 @@ def backfill(data):
     monotonic-decrease jumps in the HH:MM:SS as midnight rollovers. This
     is approximate — a cold-start restart that straddles midnight is
     indistinguishable from a pure rollover — but good enough for day/week
-    buckets since restarts are rare.
+    buckets since restarts are rare. Stamps are read as Europe/Rome (_TZ);
+    lines predating the 2026-07-02 UTC->Rome cutover skew up to an hour or
+    two at day edges, which the day/week bucketing tolerates.
     """
     for fp in sorted(glob.glob(LOG + "*")):
         try:
             mtime = os.path.getmtime(fp)
-            mtime_date = datetime.fromtimestamp(mtime).date()
+            mtime_date = datetime.fromtimestamp(mtime, _TZ).date()
             # First pass: count total day rollovers so we can anchor the
             # final line to mtime_date and back-date earlier chunks.
             prev_hms = None
@@ -283,7 +291,7 @@ def backfill(data):
                             day_offset += 1
                         prev_hms = hms
                         d = start_date + timedelta(days=day_offset)
-                        ts = datetime(d.year, d.month, d.day, *hms).timestamp()
+                        ts = datetime(d.year, d.month, d.day, *hms, tzinfo=_TZ).timestamp()
                     process(raw, data, ts=ts)
         except Exception:
             pass
