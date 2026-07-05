@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# bot.say — safe writer to the IRC bot FIFO (bot.send).
+#
+# The message body is read from STDIN, so apostrophes, accents, `%`, `$` and
+# friends NEVER pass through shell quoting — the footgun that made me strip
+# them by hand. See memory feedback_fifo_heredoc_utf8.
+#
+# Usage:
+#   bot.say '#chan' <<'EOF'
+#   messaggio con è, à, l'apostrofo: tutto intero
+#   EOF
+#
+#   bot.say -v ACT '#chan' <<'EOF'      # /me action  (ACT/NOTICE/…)
+#   fa qualcosa
+#   EOF
+#
+# Only the target (and optional -v verb) are shell args — both simple tokens.
+# Each non-empty STDIN line is emitted as one `<VERB> <target> <line>` to the
+# FIFO, so a multi-line heredoc becomes multiple messages (mind the reply
+# policy — the tool does not rate-limit you).
+set -euo pipefail
+
+FIFO="$(dirname "$(readlink -f "$0")")/bot.send"
+verb=SAY
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -v) verb="$2"; shift 2 ;;
+    -f) FIFO="$2"; shift 2 ;;   # override FIFO path (testing)
+    --) shift; break ;;
+    *)  echo "bot.say: unknown flag $1" >&2; exit 2 ;;
+  esac
+done
+target="${1:?bot.say: missing target (e.g. #sniffo or a nick)}"
+
+sent=0
+{
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    printf '%s %s %s\n' "$verb" "$target" "$line"
+    sent=$((sent + 1))
+  done
+} > "$FIFO"
+
+[[ $sent -gt 0 ]] || { echo "bot.say: empty stdin, nothing sent" >&2; exit 1; }
