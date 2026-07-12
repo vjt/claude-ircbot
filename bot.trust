@@ -3,3 +3,4 @@
 # must confirm the nick is registered+identified to services.
 # Cache resets on PART/QUIT/NICK change.
 vjt *.openssl.it
+vjt 2a03:4000:2:33c::42
