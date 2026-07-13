@@ -3,6 +3,14 @@ bot.send
 .env
 bot.startup
 bot.stdout.log
+
+# Libera.Chat instance runtime (2nd bot: same code, own nick/FIFO/logs/env).
+# bot.trust.libera IS tracked (nick + public cloak, like bot.trust).
+.env.libera
+bot.send.libera
+bot.startup.libera
+bot.libera.log
+bot.libera.stdout.log
 aup_watchdog.log
 roll_counter.log
 rolls.json
