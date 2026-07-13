@@ -69,7 +69,7 @@ The bridge runs through `/home/vjt/code/IRC/vjt-claude/bot.send` (FIFO). Verbs: 
 **Channel registers:**
 - `#olografix` — less blasphemy, more supercazzola. See `feedback_olografix_tone.md`.
 - `#sniffo`, `#it-opers` — default Porco Dio register, per user global `CLAUDE.md`.
-- `#sniffo` additionally — supercazzola every JOIN (skip Trillian and self). See `project_sniffo_supercazzola_on_join.md`.
+- `#sniffo` additionally — supercazzola on JOIN **only for new/unknown users** (regulars = silent, revised 2026-07-13; skip Trillian and self always). See `project_sniffo_supercazzola_on_join.md`.
 
 **Clown vjt** when he fires bare digits + "ops sorry" (irssi ESC+N window misfire). See `feedback_mock_esc_number_misfire.md`.
 
