@@ -24,18 +24,28 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-HOST = "irc.azzurra.chat"
-PORT = 6697
-NICK = "vjt-claude"
-IDENT = "claude"
-REAL = "github.com/vjt/claude-ircbot"
-
+# Network + file paths are env-overridable so a SECOND instance (e.g. Libera.
+# Chat) runs the SAME code with its own nick / FIFO / logs / trust / startup.
+# Every default reproduces the original Azzurra single-instance behaviour, so
+# the Azzurra unit (which sets none of these vars) is unchanged.
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOG = os.path.join(HERE, "bot.log")
-FIFO = os.path.join(HERE, "bot.send")
-TRUST_FILE = os.path.join(HERE, "bot.trust")
-ENV_FILE = os.path.join(HERE, ".env")
-STARTUP_FILE = os.path.join(HERE, "bot.startup")
+
+
+def _cfg(key, default):
+    return os.environ.get(key, default)
+
+
+HOST = _cfg("IRC_HOST", "irc.azzurra.chat")
+PORT = int(_cfg("IRC_PORT", "6697"))
+NICK = _cfg("IRC_NICK", "vjt-claude")
+IDENT = _cfg("IRC_IDENT", "claude")
+REAL = _cfg("IRC_REAL", "github.com/vjt/claude-ircbot")
+
+LOG = _cfg("BOT_LOG", os.path.join(HERE, "bot.log"))
+FIFO = _cfg("BOT_FIFO", os.path.join(HERE, "bot.send"))
+TRUST_FILE = _cfg("BOT_TRUST", os.path.join(HERE, "bot.trust"))
+ENV_FILE = _cfg("BOT_ENV", os.path.join(HERE, ".env"))
+STARTUP_FILE = _cfg("BOT_STARTUP", os.path.join(HERE, "bot.startup"))
 
 # Wall-clock timestamps in Europe/Rome (CET/CEST, DST-aware) instead of the
 # host's UTC. bot.log + the event stream were UTC until 2026-07-02, when vjt
@@ -320,6 +330,20 @@ def handle_server_line(line):
         return
     if cmd == "307":
         # RPL_WHOISREGNICK: ":server 307 <me> <target> :has identified for this nick"
+        parts = rest.split()
+        if len(parts) >= 2:
+            target = parts[1].lower()
+            verified.add(target)
+            whois_pending.discard(target)
+            emit("VERIFIED", parts[1])
+        return
+    if cmd == "330":
+        # RPL_WHOISACCOUNT (Libera/solanum): ":srv 330 <me> <nick> <account>
+        # :is logged in as". Libera does NOT emit 307 (a Bahamut-ism), so this
+        # is its identified-to-services signal — mirror the 307 path or a
+        # trust-listed nick never verifies there. Safe: on Libera only the real
+        # account holder wears the `user/<account>` cloak the host-glob already
+        # pins, so account-vs-nick mismatch can't slip trust through.
         parts = rest.split()
         if len(parts) >= 2:
             target = parts[1].lower()

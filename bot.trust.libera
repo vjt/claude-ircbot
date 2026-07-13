@@ -1,0 +1,6 @@
+# Libera.Chat trust rules: <nick> <host_glob>
+# On Libera the identified-to-services signal is 330 (RPL_WHOISACCOUNT), not
+# Azzurra's 307 — bot.py handles both. vjt's Libera account cloak is user/vjt,
+# which services assign ONLY to the account holder, so the host-glob alone is a
+# strong gate (the WHOIS-verify is belt-and-suspenders).
+vjt user/vjt

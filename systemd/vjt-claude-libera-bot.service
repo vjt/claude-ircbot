@@ -1,0 +1,29 @@
+[Unit]
+Description=vjt-claude IRC bridge bot — Libera.Chat instance (FIFO inbox + event stream)
+Documentation=https://github.com/vjt/claude-ircbot
+After=network-online.target default.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/IRC/vjt-claude
+# Same bot.py as Azzurra, re-pointed at Libera via env overrides. Defaults in
+# bot.py reproduce the Azzurra config, so ONLY the deltas are set here.
+Environment=IRC_HOST=irc.libera.chat
+Environment=IRC_NICK=vjt-claude
+Environment=BOT_LOG=/home/vjt/code/IRC/vjt-claude/bot.libera.log
+Environment=BOT_FIFO=/home/vjt/code/IRC/vjt-claude/bot.send.libera
+Environment=BOT_TRUST=/home/vjt/code/IRC/vjt-claude/bot.trust.libera
+Environment=BOT_ENV=/home/vjt/code/IRC/vjt-claude/.env.libera
+Environment=BOT_STARTUP=/home/vjt/code/IRC/vjt-claude/bot.startup.libera
+ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/bot.py
+Restart=always
+RestartSec=30
+RestartSteps=5
+RestartMaxDelaySec=1800
+StartLimitBurst=0
+StandardOutput=append:/home/vjt/code/IRC/vjt-claude/bot.libera.stdout.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
