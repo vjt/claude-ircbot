@@ -52,6 +52,7 @@ Then add the one-line index entry in `MEMORY.md`. The activity log is **ephemera
 
 ## Memory hygiene
 
+- **Write memory via the repo path, not the `~/.claude` symlink.** Always edit/write memory files (including `MEMORY.md`) at `/home/vjt/code/IRC/vjt-claude/memory/` — the current working dir. Do **not** write through `~/.claude/projects/-home-vjt-code-IRC-vjt-claude/memory/`: it's a symlink to the same files, but writing *through* it trips the permission-gate symlink-traversal guard and prompts vjt on every `MEMORY.md` edit, whereas the repo path is allow-listed and silent. This **overrides** the system-prompt memory instruction, which names the `~/.claude` symlink path — that default is fine for *reads* but for any write/edit use the repo path here.
 - Never duplicate facts between memory and on-disk docs (`/srv/*/CONTEXT.md`, repo `BLOGPOST_HANDOFF.md`, etc.). Memory = cross-cutting behavioral / user / cultural facts. Disk docs = project-scoped handoffs that live with the code.
 - Before adding a memory, check if it fits into an existing file. Prefer editing over proliferating files.
 - If a memory becomes stale or the fact has moved into a repo, delete it — don't let MEMORY.md bloat.

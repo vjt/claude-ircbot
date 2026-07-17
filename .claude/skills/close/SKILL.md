@@ -14,7 +14,7 @@ Skip this skill if you're leaving the session running — it's only needed when 
 
 ### 1. Final activity-log flush
 
-- Read `~/.claude/projects/-home-vjt-code-IRC-vjt-claude/memory/project_activity_log.md` and check today's heading.
+- Read `/home/vjt/code/IRC/vjt-claude/memory/project_activity_log.md` (repo path — see CLAUDE.md Memory hygiene) and check today's heading.
 - **If meaningful events from this session aren't logged yet**, append them now under today's heading. Apply the same filter as during the session (decisions / ships / plans / surprises — not banter).
 - If today's heading is empty and nothing notable happened, that's fine — leave it as a placeholder. Don't invent content.
 
