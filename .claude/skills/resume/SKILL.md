@@ -1,6 +1,6 @@
 ---
 name: resume
-description: Warm-resume the vjt-claude IRC session — reseeds context from today's activity log, adopts the surviving Monitor, sweeps for WIP, reports. The canonical bringup protocol: fired by aup_watchdog.py after every /clear (hot path) and reused by /start for cold boot. Self-contained by design.
+description: Warm-resume the vjt-claude IRC session — reseeds context from today's activity log, adopts/attaches BOTH networks' Monitors (Azzurra + Libera), sweeps for WIP, reports. The canonical bringup protocol: fired by aup_watchdog.py after every /clear (hot path) and reused by /start for cold boot. Self-contained by design.
 user_invocable: true
 ---
 
@@ -29,23 +29,37 @@ grep -nE '^### [0-9]{4}-[0-9]{2}-[0-9]{2}' memory/project_activity_log.md
 - Trim is NOT done here — it's disk hygiene, not token hygiene (the log is read-on-demand, never
   auto-loaded, so an untrimmed log costs zero per-clear tokens). `/start` owns the >14d archive sweep.
 
-## 2. Adopt the Monitor (don't duplicate)
+## 2. Adopt the Monitors — BOTH networks (don't duplicate)
 
-The `tail -F` pipeline survives `/clear`; the Monitor task registration does not.
+Two bots run: **Azzurra** and **Libera** (same `bot.py`, separate processes, each with its
+OWN stdout event stream and its OWN Monitor — the Azzurra Monitor never sees Libera events and
+vice-versa). The `tail -F` pipelines survive `/clear`; the Monitor task registrations do not.
+**Handle BOTH.** The Libera one is the easy-to-forget one — its tail often does NOT survive, so
+you usually have to attach it fresh even when Azzurra's got adopted.
 
 ```bash
-pgrep -af "tail -F.*vjt-claude/bot.stdout.log"
-systemctl --user is-active vjt-claude-bot.service vjt-claude-roll-counter.service vjt-claude-aup-watchdog.service
+pgrep -af "tail -F.*vjt-claude/bot.stdout.log"          # Azzurra
+pgrep -af "tail -F.*vjt-claude/bot.libera.stdout.log"   # Libera
+systemctl --user is-active vjt-claude-bot.service vjt-claude-libera-bot.service \
+  vjt-claude-roll-counter.service vjt-claude-aup-watchdog.service
 ```
 
-- pgrep hit on `bot.stdout.log` → **adopt it, skip attach** (note `monitor adopted (pid <n>)`).
-  A hit on `bot.log` (not `bot.stdout.log`) is a stale pre-2026-05-06 orphan — kill it, attach fresh.
+For EACH network independently:
+- pgrep hit on its `*stdout.log` → **adopt it, skip attach** (note `monitor adopted (pid <n>)`).
+  A hit on `bot.log` / `bot.libera.log` (NOT `*stdout.log`) is a stale pre-2026-05-06 orphan — kill it, attach fresh.
 - No hit → attach one fresh Monitor:
-  ```
-  Monitor: command: bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor.sh
-           persistent: true, timeout_ms: 3600000
-           description: "IRC bot events (msgs+trust, invites, errors)"
-  ```
+  - **Azzurra:**
+    ```
+    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor.sh
+             persistent: true, timeout_ms: 3600000
+             description: "IRC bot events (msgs+trust, invites, errors)"
+    ```
+  - **Libera:**
+    ```
+    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor-libera.sh
+             persistent: true, timeout_ms: 3600000
+             description: "Libera IRC bot events (#grappa)"
+    ```
 - Any service not `active` → `systemctl --user start <svc>` (linger means they usually survive).
 
 ## 3. WIP sweep — resume only true gaps
@@ -64,6 +78,6 @@ tail -50 /home/vjt/code/IRC/vjt-claude/bot.log | grep -E ' [<>] '
 
 ## 4. Report ready
 
-One terse line, e.g. `resumed — monitor adopted (pid <n>), 3 svc active, no WIP.`
+One terse line, e.g. `resumed — monitors: azzurra adopted (pid <n>) + libera attached, 4 svc active, no WIP.`
 
 Then resume standing behavior (reply policy, channel registers, activity-log appends) per `CLAUDE.md`.
