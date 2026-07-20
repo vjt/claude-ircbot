@@ -56,7 +56,7 @@ See `project_greet_on_join.md`.
 Now execute the four steps documented in `.claude/skills/resume/SKILL.md`, in order:
 
 1. **Reseed** today's activity-log heading body (append today's heading if missing, read its body in full — the mandatory seed for today's events / in-flight threads / `PENDING` markers).
-2. **Adopt or attach the Monitor** (pgrep for the surviving `tail -F … bot.stdout.log` pipeline; adopt if present, else attach one fresh via `start-monitor.sh`).
+2. **Adopt or attach BOTH Monitors** — Azzurra AND Libera (two separate bots, each its own stdout stream). pgrep the surviving `tail -F … bot.stdout.log` + `… bot.libera.stdout.log` pipelines; adopt each if present, else attach fresh via `start-monitor.sh` / `start-monitor-libera.sh`. The Libera tail usually does NOT survive `/clear` — attach it.
 3. **WIP sweep** — `git status --short` + bot.log inbound/outbound dedup; resume only true gaps.
 4. **Report ready.**
 
