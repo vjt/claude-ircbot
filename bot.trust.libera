@@ -4,3 +4,4 @@
 # which services assign ONLY to the account holder, so the host-glob alone is a
 # strong gate (the WHOIS-verify is belt-and-suspenders).
 vjt user/vjt
+vjt facebook/engineering/vjt

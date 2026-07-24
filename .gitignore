@@ -38,3 +38,12 @@ tmp/
 # Host-local automation helpers (cron scripts + their logs) — not for public repo
 tools/
 
+
+# Petition sidecar private state (nick+host dedup, PII — never synced/committed)
+firma_state.json
+firma_counter.log
+
+# sniffo message-stats sidecar — not tracked here (lives in its own folder);
+# its DB, slug salt, logs and rendered per-channel output are all PII.
+sniffo_stats/
+systemd/vjt-claude-sniffo-stats.service
