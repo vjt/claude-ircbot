@@ -77,6 +77,16 @@ ENV = load_env()
 NICKSERV_PASS = ENV.get("NICKSERV_PASS") or os.environ.get("NICKSERV_PASS") or ""
 startup_fired = False
 
+# Ghost-on-connect state. A line drop leaves our old connection holding NICK as
+# a ghost for ~7min (until the server ping-times it out). Every reconnect in
+# that window hit 433 pre-001 and just gave up -> registration never completed
+# -> recv timeout -> systemd restart -> flap loop for the whole 7min. Instead:
+# on a pre-001 433 take a throwaway nick to reach 001, GHOST the stale nick from
+# services, reclaim it, then IDENTIFY. (vjt 2026-07-20: "fatti un ghost on connect".)
+registered = False      # True once we've received 001 (registration complete)
+ghost_needed = False    # True while we hold a temp nick and still want NICK back
+tmp_nick = None         # the throwaway nick we fell back to
+
 # Trust state: nick must be in trust_rules, host must match the nick's glob,
 # AND we must have received RPL_WHOISREGNICK (307) confirming the nick is
 # registered+identified to services. Cache reset on PART/QUIT/NICK.
@@ -281,7 +291,20 @@ def fire_startup(reason):
     threading.Thread(target=run_startup, daemon=True).start()
 
 
+def _reclaim_after_ghost():
+    # GHOST is near-instant but async; give services a beat to kill the ghost,
+    # then reclaim the real nick. The server's echo of our own NICK change (in
+    # handle_server_line) fires IDENTIFY. This is wording-agnostic on purpose,
+    # so we don't depend on the exact "has been ghosted" NOTICE text differing
+    # between Azzurra (suxserv) and Libera (atheme).
+    time.sleep(4)
+    if ghost_needed:
+        send_raw(f"NICK {NICK}")
+        emit("NS_GHOST_RECLAIM", NICK)
+
+
 def handle_server_line(line):
+    global registered, ghost_needed, tmp_nick
     log("<", line)
     if line.startswith("PING "):
         send_raw("PONG " + line[5:])
@@ -301,19 +324,36 @@ def handle_server_line(line):
     rest = rest or ""
 
     if cmd == "001":
+        registered = True
         emit("CONNECTED", NICK)
         for tn, _ in trust_rules:
             whois_pending.add(tn)
             send_raw(f"WHOIS {tn}")
             emit("WHOIS_FIRED", tn)
         if NICKSERV_PASS:
-            send_raw(f"PRIVMSG NickServ :IDENTIFY {NICKSERV_PASS}")
-            emit("NS_IDENTIFY_SENT")
+            if ghost_needed:
+                # Our real nick is held (by our own ghost after a line drop):
+                # kill it from services, then reclaim + IDENTIFY (see below).
+                send_raw(f"PRIVMSG NickServ :GHOST {NICK} {NICKSERV_PASS}")
+                emit("NS_GHOST_SENT", NICK)
+                threading.Thread(target=_reclaim_after_ghost, daemon=True).start()
+            else:
+                send_raw(f"PRIVMSG NickServ :IDENTIFY {NICKSERV_PASS}")
+                emit("NS_IDENTIFY_SENT")
         else:
             fire_startup("no-nickserv-pass")
         return
     if cmd in ("433", "432", "437"):
         emit("NICK_ERROR", cmd, rest)
+        if not registered:
+            # Pre-registration collision, almost always our own lingering
+            # ghost. Grab a throwaway nick so registration completes and we
+            # reach 001 -> then GHOST the real nick and reclaim it. Random
+            # suffix so a second flap doesn't collide with the same temp.
+            tmp_nick = f"{NICK}-{random.randint(100, 999)}"
+            send_raw(f"NICK {tmp_nick}")
+            ghost_needed = True
+            emit("NICK_FALLBACK", tmp_nick)
         return
     if cmd in ("464", "465"):
         emit("AUTH_ERROR", cmd, rest)
@@ -446,6 +486,14 @@ def handle_server_line(line):
         new_nick = rest.lstrip(":")
         emit("NICK_CHANGE", nick, f"HOST={host}", new_nick)
         trust_reset(nick, "nick-change")
+        if ghost_needed and new_nick.lower() == NICK.lower():
+            # We just reclaimed the real nick after ghosting the stale one.
+            # Now IDENTIFY on it (NickServ's "identified" NOTICE then fires the
+            # channel-join startup, so JOINs happen on the right nick).
+            ghost_needed = False
+            if NICKSERV_PASS:
+                send_raw(f"PRIVMSG NickServ :IDENTIFY {NICKSERV_PASS}")
+                emit("NS_IDENTIFY_SENT")
         return
     if cmd == "ERROR":
         emit("SERVER_ERROR", rest)
