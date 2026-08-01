@@ -31,14 +31,25 @@ SETTINGS_FILES = [HERE / "settings.json", HERE / "settings.local.json"]
 BOT_FIFO = HERE.parent / "bot.send"
 
 
-def load_allow():
+def _load_rules(key):
     out = []
     for p in SETTINGS_FILES:
         try:
-            out.extend(json.loads(p.read_text()).get("permissions", {}).get("allow", []))
+            out.extend(json.loads(p.read_text()).get("permissions", {}).get(key, []))
         except (FileNotFoundError, json.JSONDecodeError):
             continue
     return out
+
+
+def load_allow():
+    return _load_rules("allow")
+
+
+def load_deny():
+    """`permissions.deny` from the same files. CC reads these natively only at
+    boot; this session runs for months, so the gate enforces them itself — and
+    deny always wins over allow (see main())."""
+    return _load_rules("deny")
 
 
 def notify(text):
@@ -120,6 +131,22 @@ def main():
         sys.exit(0)
     tool = data.get("tool_name", "")
     tool_input = data.get("tool_input", {}) or {}
+
+    # Deny first, and deny always wins: an allow-glob wide enough to cover a
+    # sensitive file (bot.trust inside Edit(/home/vjt/code/**)) must not be
+    # able to grant it back.
+    for rule in load_deny():
+        if rule_matches(rule, tool, tool_input):
+            notify(f"[PERM-DENY] {tool} bloccato da regola deny: {rule}")
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"vietato dalla regola deny: {rule} — serve il via esplicito di vjt",
+                }
+            }))
+            return
+
     for rule in load_allow():
         if rule_matches(rule, tool, tool_input):
             print(json.dumps({
