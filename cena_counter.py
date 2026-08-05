@@ -6,13 +6,19 @@ state, re-render a public json that a static page polls.
 
 Semantics (vjt's brief, #sniffo 2026-08-05 22:23):
 
-  * `!cena <citta> [data ...]` casts a vote. A nick MAY change its mind:
-    the LAST vote replaces the previous one entirely. This is the one
+  * `!cena <citta> [data][, data...]` casts a vote. A nick MAY change its
+    mind: the LAST vote replaces the previous one entirely. This is the one
     difference from the petition, where every `!firma` accumulates.
   * Multiple dates in one vote are allowed (alk, same evening: "il coso per
     selezionare la data a scelte multiple"). They are alternatives the voter
     is OK with, so the whole set is replaced by the next vote — "last wins"
     still holds, it just wins over a set rather than a scalar.
+  * Dates are split on COMMAS, never on whitespace. The very first real vote
+    was `!cena roma 11 settembre`, and splitting on spaces turned one date
+    into two bogus ones ("11" and "settembre"). People write dates the way
+    they speak them, so a date is free text and only a comma starts a new
+    alternative. The city stays the first whitespace-delimited token —
+    multi-word cities go hyphenated.
   * Bare `!cena` asks for the standings and gets ONE line back in channel.
     A vote itself is silent: the page is the feedback surface, and an ack
     per vote would spam a busy channel.
@@ -52,7 +58,7 @@ POLL_CHANS = {"#sniffo", "#sbiffo"}
 CENA_PAT = re.compile(r'^!cena(?:\s+(?P<args>.*\S))?\s*$', re.IGNORECASE)
 
 CITY_MAX = 24        # a city name, not an essay
-DATE_MAX = 24
+DATE_MAX = 32        # free text: "sabato 13 settembre" must fit whole
 MAX_DATES = 6        # Doodle-style alternatives, bounded so one vote can't flood
 TITLE = "Cena della crew"
 
@@ -201,11 +207,13 @@ def process(line, data, ts=None, talk=False):
             say(chan, standings_line(data["votes"]))
         return False
 
-    parts = args.split()
-    city = _clean(parts[0], CITY_MAX)
+    city, _, rest = args.partition(" ")
+    city = _clean(city, CITY_MAX)
     if not city:
         return False
-    dates = [d for d in (_clean(p, DATE_MAX) for p in parts[1:MAX_DATES + 1]) if d]
+    # Comma-separated alternatives; a single date keeps its spaces.
+    dates = [d for d in (_clean(p, DATE_MAX) for p in rest.split(","))
+             if d][:MAX_DATES]
 
     head = canon_nick(nick)
     ts_i = int(ts if ts is not None else time.time())
