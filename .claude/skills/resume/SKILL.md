@@ -1,6 +1,6 @@
 ---
 name: resume
-description: Warm-resume the vjt-claude IRC session — reseeds context from today's activity log, adopts/attaches BOTH networks' Monitors (Azzurra + Libera), sweeps for WIP, reports. The canonical bringup protocol: fired by aup_watchdog.py after every /clear (hot path) and reused by /start for cold boot. Self-contained by design.
+description: Warm-resume the vjt-claude IRC session — reseeds context from today's activity log, adopts/attaches all three Monitors (Azzurra + Libera + Telegram), sweeps for WIP, reports. The canonical bringup protocol: fired by aup_watchdog.py after every /clear (hot path) and reused by /start for cold boot. Self-contained by design.
 user_invocable: true
 ---
 
@@ -29,22 +29,24 @@ grep -nE '^### [0-9]{4}-[0-9]{2}-[0-9]{2}' memory/project_activity_log.md
 - Trim is NOT done here — it's disk hygiene, not token hygiene (the log is read-on-demand, never
   auto-loaded, so an untrimmed log costs zero per-clear tokens). `/start` owns the >14d archive sweep.
 
-## 2. Adopt the Monitors — BOTH networks (don't duplicate)
+## 2. Adopt the Monitors — THREE streams (don't duplicate)
 
-Two bots run: **Azzurra** and **Libera** (same `bot.py`, separate processes, each with its
-OWN stdout event stream and its OWN Monitor — the Azzurra Monitor never sees Libera events and
-vice-versa). The `tail -F` pipelines survive `/clear`; the Monitor task registrations do not.
-**Handle BOTH.** The Libera one is the easy-to-forget one — its tail often does NOT survive, so
-you usually have to attach it fresh even when Azzurra's got adopted.
+Three event streams, three separate Monitors: **Azzurra** and **Libera** (same `bot.py`, separate
+processes, each with its OWN stdout stream — the Azzurra Monitor never sees Libera events and
+vice-versa) plus **Telegram** (`@gazzurbo_bot` long-poller, a different transport entirely).
+The `tail -F` pipelines survive `/clear`; the Monitor task registrations do not. **Handle ALL
+THREE.** Libera and Telegram are the easy-to-forget ones — their processes often do NOT survive,
+so you usually attach them fresh even when Azzurra's got adopted.
 
 ```bash
 pgrep -af "tail -F.*vjt-claude/bot.stdout.log"          # Azzurra
 pgrep -af "tail -F.*vjt-claude/bot.libera.stdout.log"   # Libera
+pgrep -af "tg_poll.sh"                                  # Telegram
 systemctl --user is-active vjt-claude-bot.service vjt-claude-libera-bot.service \
   vjt-claude-roll-counter.service vjt-claude-aup-watchdog.service
 ```
 
-For EACH network independently:
+For EACH stream independently:
 - pgrep hit on its `*stdout.log` → **adopt it, skip attach** (note `monitor adopted (pid <n>)`).
   A hit on `bot.log` / `bot.libera.log` (NOT `*stdout.log`) is a stale pre-2026-05-06 orphan — kill it, attach fresh.
 - No hit → attach one fresh Monitor:
@@ -60,6 +62,18 @@ For EACH network independently:
              persistent: true, timeout_ms: 3600000
              description: "Libera IRC bot events (#grappa)"
     ```
+  - **Telegram** (the support group and the group vjt and I share — who's in them and
+    which chat is which lives in `[[project_melablu_support]]` / `[[reference_telegram_bridge_handles]]`,
+    not in this repo):
+    ```
+    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/tmp/tg_poll.sh
+             persistent: true, timeout_ms: 3600000
+             description: "Telegram @gazzurbo_bot messages (Melablu support + shared group)"
+    ```
+    Token lives at `~/.config/gazzurbo/token` (600, never printed); the poller persists its
+    `getUpdates` offset in `tmp/tg_offset`, so a restart replays nothing. Reply with
+    `tmp/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). **Only ONE poller may run** —
+    a second `getUpdates` on the same token gets `409 Conflict` and both starve.
 - Any service not `active` → `systemctl --user start <svc>` (linger means they usually survive).
 
 ## 3. WIP sweep — resume only true gaps
@@ -78,6 +92,6 @@ tail -50 /home/vjt/code/IRC/vjt-claude/bot.log | grep -E ' [<>] '
 
 ## 4. Report ready
 
-One terse line, e.g. `resumed — monitors: azzurra adopted (pid <n>) + libera attached, 4 svc active, no WIP.`
+One terse line, e.g. `resumed — monitors: azzurra adopted (pid <n>) + libera/telegram attached, 4 svc active, no WIP.`
 
 Then resume standing behavior (reply policy, channel registers, activity-log appends) per `CLAUDE.md`.
