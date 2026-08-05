@@ -19,9 +19,14 @@ Semantics (vjt's brief, #sniffo 2026-08-05 22:23):
     they speak them, so a date is free text and only a comma starts a new
     alternative. The city stays the first whitespace-delimited token —
     multi-word cities go hyphenated.
-  * Bare `!cena` asks for the standings and gets ONE line back in channel.
-    A vote itself is silent: the page is the feedback surface, and an ack
-    per vote would spam a busy channel.
+  * `!pranzo` is the same poll with the meal as a third voted dimension
+    (vjt, 22:31 "vai anche con !pranzo"; alk's argument was that a lunch lets
+    people go home the same evening instead of hunting for a bed). One nick
+    still holds ONE vote — city, dates and meal travel together and are all
+    replaced at once.
+  * Bare `!cena`/`!pranzo` asks for the standings and gets ONE line back in
+    channel. A vote itself is silent: the page is the feedback surface, and
+    an ack per vote would spam a busy channel.
 
 Two files, split by write pattern (same reasoning as firma_counter):
 
@@ -54,8 +59,9 @@ FIFO = os.environ.get("CENA_FIFO", str(REPO / "bot.send"))
 
 POLL_CHANS = {"#sniffo", "#sbiffo"}
 
-# Line must START with `!cena` so meta-chatter merely mentioning it can't vote.
-CENA_PAT = re.compile(r'^!cena(?:\s+(?P<args>.*\S))?\s*$', re.IGNORECASE)
+# Line must START with the command so meta-chatter mentioning it can't vote.
+CENA_PAT = re.compile(r'^!(?P<meal>cena|pranzo)(?:\s+(?P<args>.*\S))?\s*$',
+                      re.IGNORECASE)
 
 CITY_MAX = 24        # a city name, not an essay
 DATE_MAX = 32        # free text: "sabato 13 settembre" must fit whole
@@ -127,6 +133,16 @@ def tally(votes):
     return sorted(by_city.values(), key=lambda e: (-e["count"], e["city"].casefold()))
 
 
+def meal_tally(votes):
+    """Lunch vs dinner. Two fixed rows, always both present even at zero, so
+    the page shows the trade-off instead of hiding the losing side."""
+    counts = {"pranzo": 0, "cena": 0}
+    for v in votes.values():
+        counts[v.get("meal", "cena")] += 1
+    return [{"meal": m, "count": c} for m, c in
+            sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
 def date_tally(votes):
     """Date standings across ALL cities — a date is an alternative, not a city
     attribute, and the crew picks the day people can actually make."""
@@ -143,7 +159,7 @@ def save(data):
     votes = data["votes"]
     public = sorted(
         ({"nick": v["nick"], "city": v["city"], "dates": v.get("dates", []),
-          "ts": v["ts"]} for v in votes.values()),
+          "meal": v.get("meal", "cena"), "ts": v["ts"]} for v in votes.values()),
         key=lambda v: v["ts"],
     )
     doc = {
@@ -151,6 +167,7 @@ def save(data):
         "count": len(votes),
         "cities": tally(votes),
         "dates": date_tally(votes),
+        "meals": meal_tally(votes),
         "votes": public,
     }
     _atomic_write(OUT_JSON, json.dumps(doc, indent=2, ensure_ascii=False))
@@ -158,12 +175,17 @@ def save(data):
 
 def standings_line(votes):
     if not votes:
-        return "Nessun voto. `!cena <citta> [date]` per aprire le danze."
+        return ("Nessun voto. `!cena <citta> [data, data]` "
+                "(o `!pranzo`) per aprire le danze.")
     cities = ", ".join(f"{e['city']} {e['count']}" for e in tally(votes)[:5])
     dates = date_tally(votes)[:3]
+    meals = ", ".join(f"{m['meal']} {m['count']}" for m in meal_tally(votes)
+                      if m["count"])
     out = f"🍕 {len(votes)} voti — {cities}"
     if dates:
         out += " | date: " + ", ".join(f"{d['date']} {d['count']}" for d in dates)
+    if meals:
+        out += " | " + meals
     return out
 
 
@@ -201,6 +223,7 @@ def process(line, data, ts=None, talk=False):
     if not cm:
         return False
 
+    meal = cm.group("meal").lower()
     args = (cm.group("args") or "").strip()
     if not args:
         if talk:
@@ -222,10 +245,11 @@ def process(line, data, ts=None, talk=False):
     # keeps the mirrored telegram copy (both bridges relay the same group)
     # from rewriting ts and re-rendering for nothing.
     if prev and prev["city"].casefold() == city.casefold() \
+            and prev.get("meal", "cena") == meal \
             and [d.casefold() for d in prev.get("dates", [])] == [d.casefold() for d in dates]:
         return False
     data["votes"][head.casefold()] = {
-        "nick": head, "city": city, "dates": dates, "ts": ts_i,
+        "nick": head, "city": city, "dates": dates, "meal": meal, "ts": ts_i,
     }
     return True
 
@@ -250,6 +274,8 @@ def list_cmd():
         print(f"  {e['city']}: {e['count']} ({', '.join(e['nicks'])})")
     if doc.get("dates"):
         print("  date:", ", ".join(f"{d['date']} x{d['count']}" for d in doc["dates"]))
+    if doc.get("meals"):
+        print("  pasto:", ", ".join(f"{m['meal']} x{m['count']}" for m in doc["meals"]))
 
 
 def daemon():
