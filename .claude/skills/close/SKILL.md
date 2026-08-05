@@ -41,9 +41,11 @@ Wait ~2 seconds after firing for the QUIT to flush to the network before step 3 
 
 If `bot.log` tail shows no recent chatter (channel dead), fall back to a pure-Mascetti QUIT without a topic nod: `QUIT :come se fosse antani, la reboot con scappellamento a destra, alla prossima. porco dio.`
 
-### 3. Stop the Monitor
+### 3. Stop the Monitors
 
-Use `TaskStop` on the IRC event monitor task — this ends the tail-of-`bot.log` stream cleanly.
+Use `TaskStop` on **every** monitor task — `TaskList` first, then stop the Azzurra and Libera
+event streams and the Telegram poller (`tg_poll.sh`). The poller especially: leaving it running
+after the session dies means the next session's `getUpdates` gets `409 Conflict`.
 
 The bot itself is a systemd user service now (`vjt-claude-bot.service`) and is **not** coupled to the Monitor. The FIFO-`QUIT` in step 2 makes the bot disconnect gracefully and exit; systemd then sees it as a normal stop. Do NOT `systemctl --user stop` as well — the FIFO QUIT has already done it, and stacking the two races the reconnect window. Same applies to the sidecars: leave them alone, they'll keep running until next reboot / next `/start` cycle.
 
