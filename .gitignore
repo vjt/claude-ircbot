@@ -47,3 +47,7 @@ firma_counter.log
 # its DB, slug salt, logs and rendered per-channel output are all PII.
 sniffo_stats/
 systemd/vjt-claude-sniffo-stats.service
+
+# Dinner poll sidecar private state (nick + vote) — not for public repo
+cena_state.json
+cena_counter.log
