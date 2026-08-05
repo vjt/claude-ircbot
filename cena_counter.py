@@ -60,8 +60,14 @@ FIFO = os.environ.get("CENA_FIFO", str(REPO / "bot.send"))
 POLL_CHANS = {"#sniffo", "#sbiffo"}
 
 # Line must START with the command so meta-chatter mentioning it can't vote.
-CENA_PAT = re.compile(r'^!(?P<meal>cena|pranzo)(?:\s+(?P<args>.*\S))?\s*$',
+# A space after the bang is tolerated: phone keyboards autocorrect "!cena" to
+# "! Cena", and a vote lost to autocapitalisation is a vote lost for nothing.
+CENA_PAT = re.compile(r'^!\s*(?P<meal>cena|pranzo)(?:\s+(?P<args>.*\S))?\s*$',
                       re.IGNORECASE)
+# `!cenabologna13` — the command run into its argument. It used to die silent,
+# which reads as "the bot ate my vote". Answer with the syntax instead of
+# guessing where the city starts: bologna13 could be a city or a date.
+TYPO_PAT = re.compile(r'^!\s*(?:cena|pranzo)\S', re.IGNORECASE)
 
 CITY_MAX = 24        # a city name, not an essay
 DATE_MAX = 32        # free text: "sabato 13 settembre" must fit whole
@@ -221,6 +227,9 @@ def process(line, data, ts=None, talk=False):
             nick, text = bm.group(1), bm.group(2)
     cm = CENA_PAT.match(text.strip())
     if not cm:
+        if talk and TYPO_PAT.match(text.strip()):
+            say(chan, "Ci vogliono gli spazi: `!cena <citta> <data>`, "
+                      "piu' date separate dalla virgola.")
         return False
 
     meal = cm.group("meal").lower()
