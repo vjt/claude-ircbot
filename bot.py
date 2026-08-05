@@ -203,6 +203,59 @@ def trust_check(nick, host):
     return (True, "ok")
 
 
+# Hard block on private messages from strangers (vjt 2026-08-03). The written
+# policy alone is not enough: by the time Claude can apply it, the payload is
+# already in its context. Dropping at the bot is the only real filter.
+#
+# The gate is `is_trust_listed`, NOT full `trust_check`: full trust needs a 307
+# WHOIS round-trip, which is asynchronous, so the FIRST DM from a trusted nick
+# would always be dropped. Listed nicks therefore still get through, tagged
+# UNTRUSTED until 307 lands — a nick-squatter on a listed nick reaches the
+# event stream but arrives visibly untrusted, which is the case the refusal
+# policy already covers. Unlisted nicks never reach the event stream at all.
+#
+# The raw line is still written to bot.log by handle_server_line() before
+# dispatch, so nothing is lost forensically — it just never becomes an event.
+SERVICE_NICKS = {
+    "nickserv", "chanserv", "memoserv", "operserv", "hostserv",
+    "botserv", "helpserv", "statserv", "global", "services",
+}
+DM_REJECT_MSG = _cfg(
+    "BOT_DM_REJECT",
+    "Con me si parla in canale, non in privato. / I only talk in channels, not in private.",
+)
+DM_REJECT_COOLDOWN = 6 * 3600.0
+dm_rejected: dict[str, float] = {}  # nick_lower -> monotonic ts of last auto-reply
+dm_lock = threading.Lock()
+
+
+def dm_blocked(nick):
+    """True if a private message from `nick` must be dropped before it can
+    become an event. Services and our own nick are never blocked."""
+    n = nick.lower()
+    if not n or n == NICK.lower() or n in SERVICE_NICKS:
+        return False
+    return not is_trust_listed(n)
+
+
+def dm_reject_once(nick):
+    """Send the 'talk in channel' line at most once per DM_REJECT_COOLDOWN per
+    nick. NOTICE, not PRIVMSG: RFC-correct for an automated reply, and it keeps
+    two bots from ping-ponging auto-replies at each other."""
+    n = nick.lower()
+    now = time.monotonic()
+    with dm_lock:
+        last = dm_rejected.get(n)
+        if last is not None and now - last < DM_REJECT_COOLDOWN:
+            return False
+        dm_rejected[n] = now
+        if len(dm_rejected) > 500:
+            for k, ts in sorted(dm_rejected.items(), key=lambda kv: kv[1])[:100]:
+                dm_rejected.pop(k, None)
+    send_raw(f"NOTICE {nick} :{DM_REJECT_MSG}")
+    return True
+
+
 def trust_reset(nick, reason):
     n = nick.lower()
     if n in verified or n in whois_pending:
@@ -460,6 +513,19 @@ def handle_server_line(line):
                 send_raw(f"NOTICE {nick} :\x01VERSION claude-code PoC\x01")
             elif ctcp.upper().startswith("PING"):
                 send_raw(f"NOTICE {nick} :\x01{ctcp}\x01")
+            return
+        # Private message from a nick that isn't even trust-listed: drop it
+        # here. No BODY is emitted — the whole point is that the payload never
+        # reaches the event stream (vjt 2026-08-03).
+        if not target.startswith(("#", "&")) and dm_blocked(nick):
+            replied = dm_reject_once(nick)
+            emit(
+                "DM_BLOCKED",
+                f"FROM={nick}",
+                f"HOST={host}",
+                f"LEN={len(body)}",
+                "replied" if replied else "silent",
+            )
             return
         trusted, reason = trust_check(nick, host)
         trust = "TRUSTED" if trusted else "UNTRUSTED"
