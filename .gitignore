@@ -51,3 +51,6 @@ systemd/vjt-claude-sniffo-stats.service
 # Dinner poll sidecar private state (nick + vote) — not for public repo
 cena_state.json
 cena_counter.log
+
+# !list gag sidecar runtime log
+list_sidecar.log
