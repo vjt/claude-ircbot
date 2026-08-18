@@ -35,7 +35,7 @@ account or client setup required.
   `PRIVMSG`s and sends them.
 
 About 500 lines of Python for the bot itself, no dependencies outside the
-standard library. Two small sidecars live alongside it (see
+standard library. A handful of small sidecars live alongside it (see
 [Companions](#companions)).
 
 ## Running it
@@ -49,7 +49,22 @@ python3 -u bot.py
 ```
 
 Default config is inline at the top of `bot.py` — adjust `HOST`, `PORT`,
-`NICK` for your target network.
+`NICK` for your target network. Every default is also
+environment-overridable, which is what makes a second instance possible
+(see [Running two networks](#running-two-networks)):
+
+| Variable | Default | What it is |
+|---|---|---|
+| `IRC_HOST` / `IRC_PORT` | `irc.azzurra.chat` / `6697` | TLS endpoint |
+| `IRC_NICK` / `IRC_IDENT` / `IRC_REAL` | `vjt-claude` / `claude` / repo URL | registration |
+| `BOT_LOG` | `bot.log` | raw traffic log, both directions |
+| `BOT_FIFO` | `bot.send` | command inbox |
+| `BOT_TRUST` | `bot.trust` | trust list (see below) |
+| `BOT_ENV` | `.env` | NickServ password file |
+| `BOT_STARTUP` | `bot.startup` | post-auth command replay |
+
+Timestamps in `bot.log` and on the event stream are `Europe/Rome` wall
+clock regardless of the host TZ.
 
 Send commands via the FIFO:
 
@@ -59,6 +74,47 @@ printf 'SAY #mychannel hello everyone\n' > bot.send
 
 Supported commands: `SAY`, `ACT`, `NOTICE`, `JOIN`, `PART`, `WHOIS`,
 `QUIT`, `RAW`.
+
+### bot.say — writing to the FIFO without a quoting footgun
+
+`printf` into the FIFO breaks on the things people actually type: a bare
+`%` eats the next word as a format specifier, and apostrophes and accented
+characters have to survive a layer of shell quoting. `bot.say` takes the
+body on **stdin** instead, so only the target (a simple token) is ever a
+shell argument:
+
+```bash
+./bot.say '#mychannel' <<'EOF'
+100% d'accordo — accents, apostrophes and percent signs all arrive intact
+EOF
+
+./bot.say -v ACT '#mychannel' <<'EOF'   # any verb: ACT, NOTICE, …
+waves
+EOF
+```
+
+Each non-empty stdin line becomes one message, so a heredoc sends several.
+`-f <path>` points it at a different FIFO — that is how the second
+instance is addressed.
+
+### Running two networks
+
+`bot.py` is single-network by design; a second network is a second process
+with its own env, not a threading model inside the bot. Everything
+per-network is a file path, so the two instances share zero state:
+
+```bash
+IRC_HOST=irc.libera.chat \
+BOT_LOG=bot.libera.log BOT_FIFO=bot.send.libera \
+BOT_TRUST=bot.trust.libera BOT_ENV=.env.libera \
+BOT_STARTUP=bot.startup.libera \
+python3 -u bot.py
+```
+
+The agent attaches one Monitor per instance (each has its own stdout
+stream) and picks the FIFO per message:
+`./bot.say -f bot.send.libera '#chan'`.
+`systemd/vjt-claude-libera-bot.service` is exactly this, as a unit.
 
 ### NickServ auth & startup replay
 
@@ -177,8 +233,15 @@ behavior.
 
 ![companions](docs/img/companions.jpg)
 
-Two optional helpers ship in the repo. Both tail `bot.log` or the Claude
-Code session JSONL — neither touches IRC directly.
+Optional helpers ship in the repo. They all tail `bot.log` (or the Claude
+Code session JSONL) and, when they need to speak, write verbs into the
+`bot.send` FIFO like any other client — none of them opens an IRC
+connection of its own.
+
+They exist for the same reason: anything mechanical and repetitive is
+cheaper, more predictable and always-on as a hundred lines of Python than
+as an agent turn. The agent keeps the judgement calls; the sidecars keep
+the bookkeeping.
 
 ### Sidecars
 
@@ -192,14 +255,46 @@ Code session JSONL — neither touches IRC directly.
 - **`roll_counter.py`** — tails `bot.log` and scores `::Roll` CTCP-action
   games plus an open-set Italian blasphemy matcher, writing a leaderboard
   to `rolls.json`. Has a `stats [N]` subcommand for terminal output.
+- **`stats.py`** — renders `rolls.json` into at most five PRIVMSG-safe
+  lines (`--compact` for one). `--say <nick|#chan>` pushes them straight
+  into the FIFO.
+- **`firma_counter.py`** — petition sidecar: every `!firma [comment]` is
+  appended as a new row, never deduplicated, while the headline count
+  counts *distinct nicks*, so signing twenty times still moves it by one.
+  IRC hosts are never stored. State stays private next to the bot; a
+  `{nick, ts, comment}` projection is re-rendered on every append into a
+  public JSON that a static page polls.
+- **`cena_counter.py`** — same shape, different semantics:
+  `!cena <city> [date][, date…]` (and `!pranzo`, which votes the meal as
+  a third dimension) is one vote per nick where the **last vote replaces
+  the previous one entirely**. Dates split on commas only — people write
+  "11 settembre", and splitting on whitespace turned one date into two. A
+  vote is silent; bare `!cena` answers with a single standings line,
+  because the page is the feedback surface.
+- **`list_sidecar.py`** — owns the `!list` gag on `#sniffo` / `#sbiffo`
+  outright, so the agent never answers it and there is nothing to
+  coordinate. Emits canonical iroffer/XDCC `LIST` output, generated
+  combinatorially (titles × tags × groups × sizes) so it is never twice
+  the same.
 
 ### systemd
 
-`systemd/` ships three user units (`vjt-claude-bot.service`,
-`vjt-claude-aup-watchdog.service`, `vjt-claude-roll-counter.service`) that
-run the bot and sidecars under `systemd --user`. Enable with
-`systemctl --user enable --now vjt-claude-bot.service` after dropping (or
-symlinking) the unit files into `~/.config/systemd/user/`.
+`systemd/` ships seven user units — two bot instances
+(`vjt-claude-bot.service` for Azzurra, `vjt-claude-libera-bot.service` for
+Libera.Chat) and one per sidecar (`aup-watchdog`, `roll-counter`,
+`firma-counter`, `cena-counter`, `list-sidecar`). Drop (or symlink) the
+unit files into `~/.config/systemd/user/` and enable what you want:
+
+```bash
+systemctl --user enable --now vjt-claude-bot.service
+loginctl enable-linger "$USER"   # so it survives logout and starts at boot
+```
+
+The bot units restart on failure with a growing backoff (`RestartSec=30`,
+`RestartSteps=5`, up to 30 min) so a netsplit or a NickServ storm does not
+turn into a reconnect flood. Note that `systemctl --user stop` is a plain
+SIGTERM: for a clean part rather than a ping timeout, send `QUIT` through
+the FIFO first.
 
 ## License
 
