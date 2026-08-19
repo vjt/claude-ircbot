@@ -566,14 +566,35 @@ def handle_server_line(line):
         return
 
 
+# EAGAIN on a TLS socket means "the record isn't complete yet", not "the link
+# is dead" — retrying is correct. But retrying FOREVER would leave a process
+# that looks alive and hears nothing, which is worse than dying, so the retry
+# is capped and a real recv resets the count.
+RECV_RETRY_SLEEP = 0.05
+RECV_RETRY_MAX = 200            # ~10s of solid EAGAIN, then die for real
+
+
 def reader_loop():
     buf = b""
+    retries = 0
     while True:
         try:
             data = sock.recv(8192)
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError) as e:
+            # Measured 2026-08-19 13:03: one BlockingIOError(11) killed the
+            # process and cost a full reconnect. Against 37 genuine
+            # TimeoutErrors in the same history — so the two must NOT share a
+            # handler. Timeout and reset still fall through and kill us.
+            retries += 1
+            if retries > RECV_RETRY_MAX:
+                emit("ERROR", "recv-fail", f"{retries} consecutive {e!r}")
+                return
+            time.sleep(RECV_RETRY_SLEEP)
+            continue
         except Exception as e:
             emit("ERROR", "recv-fail", repr(e))
             return
+        retries = 0
         if not data:
             emit("DISCONNECTED")
             return
