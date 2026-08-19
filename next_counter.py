@@ -50,7 +50,7 @@ OUT_JSON = Path(os.environ.get("NEXT_OUT", "/srv/www-static/t/next/next.json"))
 # '' disables the channel reply entirely (dry runs must stay mute).
 FIFO = os.environ.get("NEXT_FIFO", str(REPO / "bot.send"))
 
-POLL_CHANS = {"#grappa"}
+POLL_CHANS = {"#grappa", "#sniffo"}   # #sniffo added on vjt's order, 13:32
 
 TITLE = "grappa — cosa facciamo dopo la 1.3"
 REPO_URL = "https://github.com/vjt/grappa-irc/issues/"
