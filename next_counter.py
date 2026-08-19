@@ -93,6 +93,10 @@ NEXT_PAT = re.compile(r'^!\s*next(?:\s+(?P<args>.*\S))?\s*$', re.IGNORECASE)
 # `!nextsearch` — the command run into its argument. Dying silent here reads
 # as "the bot ate my vote", so answer with the syntax instead.
 TYPO_PAT = re.compile(r'^!\s*next\S', re.IGNORECASE)
+# `!wat <opzione>` — read-only lookup, never touches the tally. Someone asking
+# what an option IS is not casting a vote for it (vjt, 13:25).
+WAT_PAT = re.compile(r'^!\s*wat(?:\s+(?P<args>.*\S))?\s*$', re.IGNORECASE)
+WAT_TYPO_PAT = re.compile(r'^!\s*wat\S', re.IGNORECASE)
 
 SLUG_MAX = 24
 
@@ -191,7 +195,8 @@ def standings_line(votes):
     nobody can see is an option nobody can pick.
     """
     if not votes:
-        return f"Nessun voto ancora. `!next <opzione>` per aprire. {ballot_line()}"
+        return (f"Nessun voto ancora. `!next <opzione>` per aprire, "
+                f"`!wat <opzione>` per la issue. {ballot_line()}")
     rows = tally(votes)
     voted = [e for e in rows if e["count"]]
     zero = [e["slug"] for e in rows if not e["count"]]
@@ -200,7 +205,13 @@ def standings_line(votes):
     line = f"🗳 {n} {'voto' if n == 1 else 'voti'} — {body}"
     if zero:
         line += f" · a zero: {', '.join(zero)}"
-    return line
+    return line + " · `!wat <opzione>` per la issue"
+
+
+def issue_line(slug):
+    """`!wat voice` -> what it is and where to read the whole thing."""
+    num, label = OPTIONS[slug]
+    return f"{slug} — {label} — {REPO_URL}{num}"
 
 
 def say(chan, text):
@@ -230,10 +241,26 @@ def process(line, data, ts=None, talk=False):
     if chan not in POLL_CHANS:
         return False
     text = text.strip()
+
+    # `!wat` is read-only: it answers and returns False, so no path through it
+    # can ever write a vote.
+    wm = WAT_PAT.match(text)
+    if wm:
+        if talk:
+            wargs = (wm.group("args") or "").strip()
+            wslug = resolve(wargs.split()[0]) if wargs else None
+            if wslug:
+                say(chan, issue_line(wslug))
+            else:
+                say(chan, f"`!wat <opzione>` per la issue. {ballot_line()}")
+        return False
+
     nm = NEXT_PAT.match(text)
     if not nm:
         if talk and TYPO_PAT.match(text):
             say(chan, f"Ci vuole lo spazio: `!next <opzione>`. {ballot_line()}")
+        elif talk and WAT_TYPO_PAT.match(text):
+            say(chan, f"Ci vuole lo spazio: `!wat <opzione>`. {ballot_line()}")
         return False
 
     args = (nm.group("args") or "").strip()
