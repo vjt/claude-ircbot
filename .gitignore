@@ -54,3 +54,5 @@ cena_counter.log
 
 # !list gag sidecar runtime log
 list_sidecar.log
+next_state.json
+next_counter.log
