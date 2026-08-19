@@ -184,11 +184,23 @@ def ballot_line():
 
 
 def standings_line(votes):
+    """One line: who is winning, and the whole rest of the slate.
+
+    The unvoted options are always named. A standings line that only lists
+    what has votes hides the ballot from whoever arrives late, and an option
+    nobody can see is an option nobody can pick.
+    """
     if not votes:
         return f"Nessun voto ancora. `!next <opzione>` per aprire. {ballot_line()}"
-    rows = [e for e in tally(votes) if e["count"]][:6]
-    body = ", ".join(f"{e['slug']} {e['count']}" for e in rows)
-    return f"🗳 {len(votes)} voti — {body}"
+    rows = tally(votes)
+    voted = [e for e in rows if e["count"]]
+    zero = [e["slug"] for e in rows if not e["count"]]
+    body = ", ".join(f"{e['slug']} {e['count']}" for e in voted)
+    n = len(votes)
+    line = f"🗳 {n} {'voto' if n == 1 else 'voti'} — {body}"
+    if zero:
+        line += f" · a zero: {', '.join(zero)}"
+    return line
 
 
 def say(chan, text):
