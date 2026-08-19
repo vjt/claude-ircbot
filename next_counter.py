@@ -62,10 +62,11 @@ OPTIONS = {
     "multilingua": (362,  "cicchetto multilingua (it/fr/es/de)"),
     "encryption":  (65,   "Cifratura end-to-end dei messaggi privati"),
     "radio":       (682,  "Player radio internet nel mini-player"),
-    # Named for what it is: grappa SPEAKING IRCv3 to clients that connect to
-    # it, not demanding IRCv3 from upstream networks. morph raised exactly
-    # that ambiguity on #grappa and the slug now answers it (vjt, 13:01).
-    "ircv3-listener": (102, "Listener IRCv3 downstream"),
+    # Scope: grappa SPEAKING IRCv3 to clients that connect to it, not
+    # demanding IRCv3 from upstream networks -- morph raised that ambiguity on
+    # #grappa. The slug carried the disambiguation until !wat existed to spell
+    # it out; short slug now, the scope lives in the label (vjt, 13:29).
+    "ircv3": (102, "Listener IRCv3 downstream (grappa PARLA IRCv3 ai client)"),
     "export":      (1104, "Export dello scrollback (testo + JSON)"),
     "scripting":   (288,  "Scripting Lua via Luerl, sandboxed"),
     "voice":       (106,  "Voce: TTS + STT on-device"),
@@ -79,7 +80,7 @@ ALIASES = {
     "i18n": "multilingua", "multilingual": "multilingua", "l10n": "multilingua",
     "e2ee": "encryption", "e2e": "encryption", "omemo": "encryption",
     "cifratura": "encryption", "crittografia": "encryption",
-    "ircv3": "ircv3-listener", "listener": "ircv3-listener",
+    "ircv3-listener": "ircv3", "listener": "ircv3",
     "ricerca": "search", "lua": "scripting", "luerl": "scripting",
     "promex": "prometheus", "telemetria": "prometheus",
     "telemetry": "prometheus", "metriche": "prometheus",
@@ -132,6 +133,13 @@ def load():
             d = json.loads(STATE.read_text())
             votes = d.get("votes", {})
             if isinstance(votes, dict):
+                # A slug renamed on the ballot must not silently void the
+                # votes cast under the old spelling: resolve() knows the old
+                # name as an alias, so migrate them on the way in.
+                for v in votes.values():
+                    s = resolve(v.get("slug", ""))
+                    if s:
+                        v["slug"] = s
                 return {"votes": votes}
         except Exception:
             pass
