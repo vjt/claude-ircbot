@@ -71,6 +71,11 @@ OPTIONS = {
     "scripting":   (288,  "Scripting Lua via Luerl, sandboxed"),
     "voice":       (106,  "Voce: TTS + STT on-device"),
     "prometheus":  (99,   "Telemetria -> esportatore Prometheus"),
+    # Added on vjt's order (18:22, #grappa) after he said he intends to build
+    # it: WEBIRC is not an alternative to the derived source address, the two
+    # compose -- WEBIRC where the network grants a block and a secret, the
+    # derivation where it does not.
+    "webirc":      (1164, "WEBIRC: host reale per-utente verso la rete a monte"),
 }
 
 # Not write-ins: every alias resolves INTO the closed list above. These exist
@@ -85,6 +90,7 @@ ALIASES = {
     "promex": "prometheus", "telemetria": "prometheus",
     "telemetry": "prometheus", "metriche": "prometheus",
     "scrollback": "export", "tts": "voice", "stt": "voice", "voce": "voice",
+    "wline": "webirc", "w-line": "webirc", "web-irc": "webirc",
 }
 
 # Line must START with the command so meta-chatter mentioning it can't vote.
