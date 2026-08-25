@@ -63,9 +63,13 @@ systemd/vjt-claude-sniffo-stats.service
 cena_state.json
 cena_counter.log
 
-# Impiccato sidecar runtime — per-network state and logs. The state holds a
-# scoreboard keyed by nick, so it is PII and stays out of a public repo; the
-# question bank (impiccato_domande.json) IS tracked, it is the game content.
+# Impiccato sidecar — state, logs and the question bank itself, all untracked.
+# The state is a scoreboard keyed by nick, so it is PII. The BANK is out for a
+# different reason (vjt's call, 2026-08-25): its `goliardia` set answers with
+# bestemmie, which belong in the channel and not in a public repo. The code
+# ships, the content stays local: drop your own impiccato_domande.json beside
+# impiccato.py — without one it exits rather than starting empty.
+impiccato_domande.json
 impiccato_state.json
 impiccato_state.*.json
 impiccato.*.log
