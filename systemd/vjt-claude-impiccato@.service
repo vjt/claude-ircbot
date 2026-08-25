@@ -1,0 +1,18 @@
+[Unit]
+# Template: una istanza per rete. `%i` e' il nome della rete come lo conosce
+# NETS in impiccato.py -- vjt-claude-impiccato@azzurra, vjt-claude-impiccato@ircnet.
+Description=vjt-claude quiz a maschera "impiccato" (%i)
+Documentation=https://github.com/vjt/claude-ircbot
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/IRC/vjt-claude
+ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/impiccato.py --net %i
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/vjt/code/IRC/vjt-claude/impiccato.%i.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
