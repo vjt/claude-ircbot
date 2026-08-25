@@ -11,6 +11,17 @@ bot.send.libera
 bot.startup.libera
 bot.libera.log
 bot.libera.stdout.log
+
+# IRCnet instance runtime (3rd bot: same code, own nick/FIFO/logs).
+# bot.trust.ircnet IS tracked — it is empty BY DESIGN and the reasoning in it
+# is the point, not the entries. .env.ircnet carries no NICKSERV_PASS (IRCnet
+# has no services at all) but stays untracked like its twins, so the pattern
+# never becomes "a .env in this repo is safe to commit".
+.env.ircnet
+bot.send.ircnet
+bot.startup.ircnet
+bot.ircnet.log
+bot.ircnet.stdout.log
 aup_watchdog.log
 roll_counter.log
 rolls.json
@@ -51,6 +62,13 @@ systemd/vjt-claude-sniffo-stats.service
 # Dinner poll sidecar private state (nick + vote) — not for public repo
 cena_state.json
 cena_counter.log
+
+# Impiccato sidecar runtime — per-network state and logs. The state holds a
+# scoreboard keyed by nick, so it is PII and stays out of a public repo; the
+# question bank (impiccato_domande.json) IS tracked, it is the game content.
+impiccato_state.json
+impiccato_state.*.json
+impiccato.*.log
 
 # !list gag sidecar runtime log
 list_sidecar.log

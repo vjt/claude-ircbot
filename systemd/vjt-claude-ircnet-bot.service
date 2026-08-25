@@ -1,0 +1,52 @@
+[Unit]
+Description=vjt-claude IRC bridge bot — IRCnet instance (FIFO inbox + event stream)
+Documentation=https://github.com/vjt/claude-ircbot
+After=network-online.target default.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/IRC/vjt-claude
+# Same bot.py as Azzurra and Libera, re-pointed at IRCnet via env overrides.
+# Defaults in bot.py reproduce the Azzurra config, so ONLY the deltas are set.
+#
+# Server choice is MEASURED, not guessed. 2026-08-24 this was
+# ircnet.hostsailor.com, the ONLY one of twelve probed servers whose cert
+# validated hostname-and-all. On 2026-08-25 it netsplit and then started
+# flapping (openssl said "Verification: OK", the TCP connect timed out thirty
+# seconds later), so vjt ordered a move: "cambiamo maledetto server",
+# "restiamo tls almeno".
+#
+# Re-probed 24 IRCnet servers with `openssl s_client -verify_hostname` — the
+# way the client verifies, because a probe that checks less proves nothing.
+# hostsailor was STILL the only cert that validates. So the constraint moved
+# instead of the server list: TLS stays, verification goes (IRC_TLS_VERIFY=0,
+# see bot.py). On IRCnet there is nothing to protect anyway — no services, no
+# NickServ, no password ever on the wire.
+#
+# irc.psychz.net, re-probed with verification off: 005 NETWORK=IRCnet,
+# NICKLEN=15 (the full "vjt-claude" nick fits), 14867 users on 28 servers, no
+# split-mode, TLS up in 0.3s. Has an AAAA too, so the cristobot jail (IPv6-only)
+# can reach it. Its only defect is the hostname mismatch this flag now covers.
+# Rejected: irc.underworld.no and irc.eversible.com answer 001 but are EFNet,
+# not IRCnet — the cert was the wrong thing to look at, the 005 NETWORK is the
+# right one; openirc.snt.utwente.nl never completes registration over TLS.
+Environment=IRC_HOST=irc.psychz.net
+Environment=IRC_TLS_VERIFY=0
+Environment=IRC_NICK=vjt-claude
+Environment=BOT_LOG=/home/vjt/code/IRC/vjt-claude/bot.ircnet.log
+Environment=BOT_FIFO=/home/vjt/code/IRC/vjt-claude/bot.send.ircnet
+Environment=BOT_TRUST=/home/vjt/code/IRC/vjt-claude/bot.trust.ircnet
+Environment=BOT_ENV=/home/vjt/code/IRC/vjt-claude/.env.ircnet
+Environment=BOT_STARTUP=/home/vjt/code/IRC/vjt-claude/bot.startup.ircnet
+ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/bot.py
+Restart=always
+RestartSec=30
+RestartSteps=5
+RestartMaxDelaySec=1800
+StartLimitBurst=0
+StandardOutput=append:/home/vjt/code/IRC/vjt-claude/bot.ircnet.stdout.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
