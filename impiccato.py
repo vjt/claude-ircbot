@@ -125,14 +125,19 @@ PRIVMSG_PAT = re.compile(
 # Il numero finale e' il limite di domande della partita: `!trivial nerd 50`.
 # Il gruppo `set` e' lazy, quindi le cifre in coda finiscono in `limit` e non
 # dentro il nome del set.
+#
+# `!trivia` e' alias di `!trivial` (ordine di vjt, #sniffo 2026-08-25 23:23,
+# dopo l'obiezione di peluche: in inglese il quiz e' `trivia`, `trivial` vuol
+# dire banale). La `l` finale resta opzionale nel pattern invece di aggiungere
+# una terza alternativa: una `?` non puo' divergere dal ramo accanto.
 CMD_PAT = re.compile(
-    r'^!\s*(?:trivial|impiccati)(?:\s+(?P<set>.+?))?(?:\s+(?P<limit>\d{1,3}))?\s*$',
+    r'^!\s*(?:trivial?|impiccati)(?:\s+(?P<set>.+?))?(?:\s+(?P<limit>\d{1,3}))?\s*$',
     re.IGNORECASE)
 CLASSIFICA_PAT = re.compile(r'^!\s*classifica\s*$', re.IGNORECASE)
 # `!impiccati stop` va accettato quanto `!stop`: gosub ha scritto la forma
 # lunga al primo giro (#cybernet 21:38) e cadeva nel vuoto, che si legge come
 # un bot che ignora chi vuole chiudere.
-STOP_PAT = re.compile(r'^!\s*(?:stop|basta|(?:trivial|impiccati)\s+stop)\s*$',
+STOP_PAT = re.compile(r'^!\s*(?:stop|basta|(?:trivial?|impiccati)\s+stop)\s*$',
                       re.IGNORECASE)
 
 # I set a tema. Ordine di vjt (#sbiffo 2026-08-24 21:57-21:59): «facciamo in
