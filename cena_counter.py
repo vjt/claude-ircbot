@@ -27,6 +27,15 @@ Semantics (vjt's brief, #sniffo 2026-08-05 22:23):
   * Bare `!cena`/`!pranzo` asks for the standings and gets ONE line back in
     channel. A vote itself is silent: the page is the feedback surface, and
     an ack per vote would spam a busy channel.
+  * `!sicisono [+N]` is a SECOND, independent dimension (vjt, #sbiffo
+    2026-08-25 14:45): the poll asks where people would like to go, this
+    asks who is actually coming. The two do not gate each other — you can
+    confirm without ever having voted, and voting is not a confirmation.
+    `N` counts the people you bring along (vjt: "+ 2 bambini + 1 neonato"),
+    so one nick contributes 1 + N heads. `!nonvengo` retracts. Unlike a
+    vote, a confirmation DOES get an ack: it is a commitment someone else
+    books a table on, and silence there reads as "did it take?".
+  * `!confermati` prints the confirmed list and the head count.
 
 Two files, split by write pattern (same reasoning as firma_counter):
 
@@ -69,10 +78,49 @@ CENA_PAT = re.compile(r'^!\s*(?P<meal>cena|pranzo)(?:\s+(?P<args>.*\S))?\s*$',
 # guessing where the city starts: bologna13 could be a city or a date.
 TYPO_PAT = re.compile(r'^!\s*(?:cena|pranzo)\S', re.IGNORECASE)
 
+CONFIRM_PAT = re.compile(r'^!\s*sicisono(?:\s+\+?(?P<extra>\d{1,2}))?\s*$',
+                         re.IGNORECASE)
+DECLINE_PAT = re.compile(r'^!\s*nonvengo\s*$', re.IGNORECASE)
+CONFLIST_PAT = re.compile(r'^!\s*confermati\s*$', re.IGNORECASE)
+# Same trap as TYPO_PAT, for the confirmation verbs.
+CONFTYPO_PAT = re.compile(r'^!\s*(?:sicisono|nonvengo|confermati)\S',
+                          re.IGNORECASE)
+# `!sicisono -2`, `!sicisono +100`, `!sicisono due`: spaced correctly, but the
+# argument is not a head count, so CONFIRM_PAT drops it and the line dies mute
+# — which reads as "the bot ate my confirmation" (peluche found it by fuzzing,
+# #sniffo 2026-08-25). It needs its OWN message: the `!cenabologna` advice
+# ("add spaces") is wrong here, the spaces are already there. Valid forms are
+# consumed earlier, so anything reaching this pattern is malformed by
+# construction.
+CONFARG_PAT = re.compile(r'^!\s*(?:sicisono|nonvengo|confermati)\s+\S',
+                         re.IGNORECASE)
+
 CITY_MAX = 24        # a city name, not an essay
 DATE_MAX = 32        # free text: "sabato 13 settembre" must fit whole
 MAX_DATES = 6        # Doodle-style alternatives, bounded so one vote can't flood
+MAX_EXTRA = 20       # you are bringing family, not a coach party
 TITLE = "Cena della crew"
+
+# The decided event. Poll and confirmations stay data; this is the ruling that
+# closed the poll (vjt, #sbiffo 2026-08-25 14:46: "la data confermata e' il 12
+# a pranzo"). It lives here so page and channel quote the SAME source, and the
+# venue lands the moment alk names it.
+EVENT = {
+    "date": "sabato 12 settembre",
+    "meal": "pranzo",
+    "city": "Bologna",
+    "location": "",          # alk is booking it; empty renders as "in attesa"
+}
+
+# The page that renders OUT_JSON. Every reply carries it: the channel line is a
+# summary, the page is the whole thing (per-nick list, dates, venue).
+PAGE = "https://sindro.me/t/cena/"
+
+
+def event_confirmed():
+    """True once EVENT names a date — that is what closed the poll. From then
+    on the standings are history and `!cena` owes people the guest list."""
+    return bool(EVENT.get("date"))
 
 PRIVMSG_PAT = re.compile(
     r'< :(?P<nick>[^!@\s]+)!(?P<ident>[^@\s]+)@(?P<host>\S+)\s+'
@@ -94,7 +142,7 @@ def canon_nick(n):
 
 
 def empty():
-    return {"votes": {}}
+    return {"votes": {}, "confirmed": {}}
 
 
 def load():
@@ -102,8 +150,10 @@ def load():
         try:
             d = json.loads(STATE.read_text())
             votes = d.get("votes", {})
+            conf = d.get("confirmed", {})
             if isinstance(votes, dict):
-                return {"votes": votes}
+                return {"votes": votes,
+                        "confirmed": conf if isinstance(conf, dict) else {}}
         except Exception:
             pass
     return empty()
@@ -160,9 +210,37 @@ def date_tally(votes):
     return sorted(by_date.values(), key=lambda e: (-e["count"], e["date"]))
 
 
+def confirmed_list(confirmed):
+    """Confirmations oldest-first — this is a guest list, and the order people
+    committed in is the only order that means anything here."""
+    out = []
+    for c in confirmed.values():
+        extra = int(c.get("extra", 0))
+        out.append({"nick": c["nick"], "extra": extra, "heads": 1 + extra,
+                    "ts": c["ts"]})
+    return sorted(out, key=lambda c: c["ts"])
+
+
+def heads(confirmed):
+    return sum(1 + int(c.get("extra", 0)) for c in confirmed.values())
+
+
+def confirmed_line(confirmed):
+    ev = f"{EVENT['date']} a {EVENT['meal']}, {EVENT['city']}"
+    if not confirmed:
+        return (f"Nessun confermato per {ev}. `!sicisono` (o `!sicisono +2` "
+                f"se porti gente) per metterti nella lista. {PAGE}")
+    who = ", ".join(c["nick"] + (f" +{c['extra']}" if c["extra"] else "")
+                    for c in confirmed_list(confirmed))
+    n, h = len(confirmed), heads(confirmed)
+    loc = EVENT["location"] or "location da confermare"
+    return f"✅ {h} a tavola ({n} nick) — {who} | {ev} — {loc} | {PAGE}"
+
+
 def save(data):
     _atomic_write(STATE, json.dumps(data, indent=2, ensure_ascii=False))
     votes = data["votes"]
+    confirmed = data.get("confirmed", {})
     public = sorted(
         ({"nick": v["nick"], "city": v["city"], "dates": v.get("dates", []),
           "meal": v.get("meal", "cena"), "ts": v["ts"]} for v in votes.values()),
@@ -170,19 +248,22 @@ def save(data):
     )
     doc = {
         "title": TITLE,
+        "event": EVENT,
         "count": len(votes),
         "cities": tally(votes),
         "dates": date_tally(votes),
         "meals": meal_tally(votes),
         "votes": public,
+        "heads": heads(confirmed),
+        "confirmed": confirmed_list(confirmed),
     }
     _atomic_write(OUT_JSON, json.dumps(doc, indent=2, ensure_ascii=False))
 
 
-def standings_line(votes):
+def standings_line(votes, confirmed=None):
     if not votes:
         return ("Nessun voto. `!cena <citta> [data, data]` "
-                "(o `!pranzo`) per aprire le danze.")
+                f"(o `!pranzo`) per aprire le danze. {PAGE}")
     cities = ", ".join(f"{e['city']} {e['count']}" for e in tally(votes)[:5])
     dates = date_tally(votes)[:3]
     meals = ", ".join(f"{m['meal']} {m['count']}" for m in meal_tally(votes)
@@ -192,7 +273,11 @@ def standings_line(votes):
         out += " | date: " + ", ".join(f"{d['date']} {d['count']}" for d in dates)
     if meals:
         out += " | " + meals
-    return out
+    # The poll is history now that the date is decided: say so on the same line
+    # people already type, or they keep reading the standings as undecided.
+    if confirmed:
+        out += f" | confermati {heads(confirmed)} a tavola, `!confermati`"
+    return out + f" | {PAGE}"
 
 
 def say(chan, text):
@@ -225,18 +310,58 @@ def process(line, data, ts=None, talk=False):
         bm = BRIDGE_PREFIX_PAT.match(text)
         if bm:
             nick, text = bm.group(1), bm.group(2)
-    cm = CENA_PAT.match(text.strip())
+    text = text.strip()
+    head = canon_nick(nick)
+    conf = data.setdefault("confirmed", {})
+    key = head.casefold()
+    ts_i = int(ts if ts is not None else time.time())
+
+    # Confirmations first: they share the channel gate and the nick canon with
+    # the poll, but nothing else — a confirmation is not a vote.
+    if CONFLIST_PAT.match(text):
+        if talk:
+            say(chan, confirmed_line(conf))
+        return False
+    if DECLINE_PAT.match(text):
+        if conf.pop(key, None) is None:
+            return False
+        if talk:
+            say(chan, f"{head} sfilato dalla lista. Ora si e' in "
+                      f"{heads(conf)}.")
+        return True
+    cf = CONFIRM_PAT.match(text)
+    if cf:
+        extra = min(int(cf.group("extra") or 0), MAX_EXTRA)
+        prev = conf.get(key)
+        if prev and int(prev.get("extra", 0)) == extra:
+            return False    # same commitment twice (both TG bridges relay it)
+        conf[key] = {"nick": head, "extra": extra, "ts": ts_i}
+        if talk:
+            mine = 1 + extra
+            say(chan, f"{head} confermato per {mine}. Siamo in "
+                      f"{heads(conf)} il {EVENT['date']} a {EVENT['meal']}.")
+        return True
+
+    cm = CENA_PAT.match(text)
     if not cm:
-        if talk and TYPO_PAT.match(text.strip()):
-            say(chan, "Ci vogliono gli spazi: `!cena <citta> <data>`, "
-                      "piu' date separate dalla virgola.")
+        if talk and (TYPO_PAT.match(text) or CONFTYPO_PAT.match(text)):
+            say(chan, "Ci vogliono gli spazi: `!cena <citta> <data>` "
+                      "(date separate dalla virgola), `!sicisono +2`.")
+        elif talk and CONFARG_PAT.match(text):
+            say(chan, f"Dopo `!sicisono` ci va quanta gente porti, da 0 a "
+                      f"{MAX_EXTRA}: `!sicisono +2`. Da solo vali 1. "
+                      f"`!nonvengo` e `!confermati` non prendono argomenti.")
         return False
 
     meal = cm.group("meal").lower()
     args = (cm.group("args") or "").strip()
     if not args:
+        # Once the date is decided the standings are trivia: bare `!cena` is
+        # people asking "who is coming", so give them the same answer
+        # `!confermati` gives (vjt, #sniffo 2026-08-25 21:40).
         if talk:
-            say(chan, standings_line(data["votes"]))
+            say(chan, confirmed_line(conf) if event_confirmed()
+                else standings_line(data["votes"], conf))
         return False
 
     city, _, rest = args.partition(" ")
@@ -247,9 +372,7 @@ def process(line, data, ts=None, talk=False):
     dates = [d for d in (_clean(p, DATE_MAX) for p in rest.split(","))
              if d][:MAX_DATES]
 
-    head = canon_nick(nick)
-    ts_i = int(ts if ts is not None else time.time())
-    prev = data["votes"].get(head.casefold())
+    prev = data["votes"].get(key)
     # Last vote wins, and an identical re-vote is not a change: skipping it
     # keeps the mirrored telegram copy (both bridges relay the same group)
     # from rewriting ts and re-rendering for nothing.
@@ -257,7 +380,7 @@ def process(line, data, ts=None, talk=False):
             and prev.get("meal", "cena") == meal \
             and [d.casefold() for d in prev.get("dates", [])] == [d.casefold() for d in dates]:
         return False
-    data["votes"][head.casefold()] = {
+    data["votes"][key] = {
         "nick": head, "city": city, "dates": dates, "meal": meal, "ts": ts_i,
     }
     return True
@@ -285,12 +408,25 @@ def list_cmd():
         print("  date:", ", ".join(f"{d['date']} x{d['count']}" for d in doc["dates"]))
     if doc.get("meals"):
         print("  pasto:", ", ".join(f"{m['meal']} x{m['count']}" for m in doc["meals"]))
+    ev = doc.get("event") or {}
+    if ev:
+        print(f"  evento: {ev.get('date')} a {ev.get('meal')}, {ev.get('city')}"
+              f" — {ev.get('location') or 'location da confermare'}")
+    conf = doc.get("confirmed") or []
+    if conf:
+        print(f"  confermati: {doc.get('heads', 0)} a tavola —",
+              ", ".join(c["nick"] + (f" +{c['extra']}" if c["extra"] else "")
+                        for c in conf))
 
 
 def daemon():
     data = load()
     if not data["votes"]:
         backfill(data)
+    # Publish once on boot: the doc carries EVENT, and that changes here in the
+    # source, not in the channel. Without this the page keeps serving the last
+    # vote's snapshot until someone happens to type a command.
+    save(data)
     p = subprocess.Popen(["tail", "-F", "-n", "0", LOG],
                          stdout=subprocess.PIPE, text=True, errors="replace")
     for line in p.stdout:
