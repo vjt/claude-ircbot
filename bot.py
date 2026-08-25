@@ -41,6 +41,18 @@ NICK = _cfg("IRC_NICK", "vjt-claude")
 IDENT = _cfg("IRC_IDENT", "claude")
 REAL = _cfg("IRC_REAL", "github.com/vjt/claude-ircbot")
 
+# TLS certificate verification. Default ON — Azzurra and Libera both present a
+# chain that validates against the system CA bundle, and there is a password on
+# the wire there (NickServ), so the default must stay strict.
+#
+# IRC_TLS_VERIFY=0 drops to CERT_NONE. It exists for IRCnet (vjt's order,
+# 2026-08-25): of 24 IRCnet servers probed with `openssl s_client
+# -verify_hostname`, exactly ONE (ircnet.hostsailor.com) presented a cert that
+# validates, and that one flaps — the rest are expired, self-signed, or carry a
+# name that does not match the one we dial. There is nothing to protect on that
+# network anyway: no services, no NickServ, no password ever sent.
+TLS_VERIFY = _cfg("IRC_TLS_VERIFY", "1") not in ("0", "no", "off", "false")
+
 LOG = _cfg("BOT_LOG", os.path.join(HERE, "bot.log"))
 FIFO = _cfg("BOT_FIFO", os.path.join(HERE, "bot.send"))
 TRUST_FILE = _cfg("BOT_TRUST", os.path.join(HERE, "bot.trust"))
@@ -672,6 +684,11 @@ def main():
     global sock
     load_trust()
     ctx = ssl.create_default_context()
+    if not TLS_VERIFY:
+        # Order matters: check_hostname must go first, CERT_NONE with hostname
+        # checking still enabled raises ValueError.
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     raw = socket.create_connection((HOST, PORT), timeout=30)
     # Belt-and-suspenders against silent TCP death (NAT/ISP drops):
     # kernel keepalive probes + app-level recv timeout. Server PINGs us
@@ -684,7 +701,7 @@ def main():
         raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 4)
     sock = ctx.wrap_socket(raw, server_hostname=HOST)
     sock.settimeout(420)
-    emit("TLS_OK", HOST, PORT)
+    emit("TLS_OK", HOST, PORT, "verify" if TLS_VERIFY else "NOVERIFY")
     send_raw(f"NICK {NICK}")
     send_raw(f"USER {IDENT} 0 * :{REAL}")
 
