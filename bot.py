@@ -11,6 +11,18 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     NOTICE <target> <text>
     RAW <irc line>          -> send as-is
     JOIN <chan> / PART <chan> / WHOIS <nick> / QUIT [reason]
+
+  Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
+  The tag changes NOTHING on the wire — it is only stamped into bot.log,
+  right after the direction marker, as `HH:MM:SS > [impiccato] PRIVMSG ...`.
+  It exists because the stats ingest classified every outbound line as the
+  LLM speaking, while five sidecars (impiccato, cena, next, list, stats)
+  share this FIFO and are plain deterministic code. Untagged lines keep
+  the exact old format, so old readers are unaffected.
+
+  The tag rides ON the line and never on a separate marker line: bot.py is
+  threaded, two concurrent sends would pair a marker with the wrong line
+  (vjt's ruling, 2026-08-26: "tenere context su due righe no").
 """
 import fnmatch
 import os
@@ -282,16 +294,22 @@ def _mask_secrets(line):
     return line
 
 
-def log(direction, line):
+# Origin tags are stamped into bot.log and read back by parsers, so keep them
+# boring: no spaces, no brackets, nothing that could forge a second field.
+ORIGIN_PAT = re.compile(r"^[a-z0-9_-]{1,24}$")
+
+
+def log(direction, line, origin=None):
+    tag = f"[{origin}] " if origin else ""
     try:
         with open(LOG, "a") as f:
-            f.write(f"{_now('%H:%M:%S')} {direction} {_mask_secrets(line)}\n")
+            f.write(f"{_now('%H:%M:%S')} {direction} {tag}{_mask_secrets(line)}\n")
     except Exception:
         pass
 
 
-def send_raw(s):
-    log(">", s)
+def send_raw(s, origin=None):
+    log(">", s, origin)
     with send_lock:
         try:
             sock.sendall((s + "\r\n").encode("utf-8", errors="replace"))
@@ -299,7 +317,7 @@ def send_raw(s):
             emit("ERROR", "send-fail", repr(e))
 
 
-def split_say(target, text):
+def split_say(target, text, origin=None):
     """Send text as one or more PRIVMSGs, preserving whitespace verbatim.
 
     Lines that fit in MAX_BODY go out untouched, so ascii art keeps its
@@ -309,11 +327,11 @@ def split_say(target, text):
     """
     b = text.encode("utf-8")
     if len(b) <= MAX_BODY:
-        send_raw(f"PRIVMSG {target} :{text}")
+        send_raw(f"PRIVMSG {target} :{text}", origin)
         return
     while b:
         if len(b) <= MAX_BODY:
-            send_raw(f"PRIVMSG {target} :{b.decode('utf-8', errors='ignore')}")
+            send_raw(f"PRIVMSG {target} :{b.decode('utf-8', errors='ignore')}", origin)
             return
         cut = b.rfind(b" ", 1, MAX_BODY + 1)
         if cut <= 0:
@@ -322,7 +340,7 @@ def split_say(target, text):
                 cut -= 1
         else:
             cut += 1  # keep the breaking space on this chunk, don't strip it
-        send_raw(f"PRIVMSG {target} :{b[:cut].decode('utf-8', errors='ignore')}")
+        send_raw(f"PRIVMSG {target} :{b[:cut].decode('utf-8', errors='ignore')}", origin)
         b = b[cut:]
 
 
@@ -646,35 +664,43 @@ def process_cmd(line):
         verb, rest = line.split(" ", 1)
     else:
         verb, rest = line, ""
+    origin = None
+    if ":" in verb:
+        verb, _, origin = verb.partition(":")
+        origin = origin.lower()
+        if not ORIGIN_PAT.match(origin):
+            emit("CMD_ERROR", "bad-origin-tag", repr(origin),
+                 "allowed: [a-z0-9_-]{1,24}")
+            return
     verb = verb.upper()
     if verb == "SAY":
         if " " not in rest:
             emit("CMD_ERROR", "SAY needs <target> <text>", repr(rest))
             return
         target, text = rest.split(" ", 1)
-        split_say(target, text)
+        split_say(target, text, origin)
     elif verb == "ACT":
         if " " not in rest:
             emit("CMD_ERROR", "ACT needs <target> <text>", repr(rest))
             return
         target, text = rest.split(" ", 1)
-        send_raw(f"PRIVMSG {target} :\x01ACTION {text}\x01")
+        send_raw(f"PRIVMSG {target} :\x01ACTION {text}\x01", origin)
     elif verb == "NOTICE":
         if " " not in rest:
             emit("CMD_ERROR", "NOTICE needs <target> <text>", repr(rest))
             return
         target, text = rest.split(" ", 1)
-        send_raw(f"NOTICE {target} :{text}")
+        send_raw(f"NOTICE {target} :{text}", origin)
     elif verb == "JOIN":
-        send_raw(f"JOIN {rest}")
+        send_raw(f"JOIN {rest}", origin)
     elif verb == "PART":
-        send_raw(f"PART {rest}")
+        send_raw(f"PART {rest}", origin)
     elif verb == "WHOIS":
-        send_raw(f"WHOIS {rest}")
+        send_raw(f"WHOIS {rest}", origin)
     elif verb == "QUIT":
-        send_raw(f"QUIT :{rest or 'bye'}")
+        send_raw(f"QUIT :{rest or 'bye'}", origin)
     elif verb == "RAW":
-        send_raw(rest)
+        send_raw(rest, origin)
     else:
         emit("CMD_ERROR", "unknown-verb", repr(verb),
              "valid: SAY ACT NOTICE JOIN PART WHOIS QUIT RAW")
