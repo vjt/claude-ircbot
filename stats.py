@@ -138,7 +138,8 @@ def main() -> int:
     if args.say:
         with FIFO.open("w") as f:
             for line in lines:
-                f.write(f"SAY {args.say} {line}\n")
+                # SAY:stats — origin tag, log-only; see bot.py process_cmd.
+                f.write(f"SAY:stats {args.say} {line}\n")
     else:
         for line in lines:
             print(line)

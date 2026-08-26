@@ -241,7 +241,8 @@ def muted_channels():
 
 def say(chan, message):
     with FIFO.open("w") as fifo:
-        fifo.write(f"SAY {chan} {message}\n")
+        # SAY:list — origin tag, log-only; see bot.py process_cmd.
+        fifo.write(f"SAY:list {chan} {message}\n")
 
 
 def handle(nick, chan, rng, last_fired):

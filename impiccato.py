@@ -320,7 +320,10 @@ class Impiccato:
         except OSError:
             return          # nessun lettore sulla FIFO: si salta, non si appende
         try:
-            os.write(fd, f"SAY {chan} {text}\n".encode("utf-8"))
+            # SAY:impiccato — the tag rides on the FIFO verb and never reaches
+            # the wire; bot.py stamps it into bot.log so the stats count this
+            # line as deterministic code, not as the model talking.
+            os.write(fd, f"SAY:impiccato {chan} {text}\n".encode("utf-8"))
         except OSError:
             pass
         finally:

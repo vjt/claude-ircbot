@@ -238,7 +238,8 @@ def say(chan, text):
     except OSError:
         return
     try:
-        os.write(fd, f"SAY {chan} {text}\n".encode())
+        # SAY:next — origin tag, log-only; see bot.py process_cmd.
+        os.write(fd, f"SAY:next {chan} {text}\n".encode())
     except OSError:
         pass
     finally:
