@@ -24,6 +24,7 @@ bot.ircnet.log
 bot.ircnet.stdout.log
 aup_watchdog.log
 roll_counter.log
+chanstats.log
 rolls.json
 rolls.json.bak-*
 scrub.log
