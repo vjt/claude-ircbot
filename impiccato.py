@@ -151,6 +151,11 @@ STOP_PAT = re.compile(r'^!\s*(?:stop|basta|(?:trivial?|impiccati)\s+stop)\s*$',
 # parte e non sparisce dal gioco perche' nessuno si e' ricordato di elencarla.
 NERD_CATS = {"unix", "rete", "sicurezza", "programmazione", "web", "irc",
              "devops", "storia", "db"}
+# Fuori da `babbani` anche se non sono nerd: ordine di vjt (#italia 2026-08-29
+# 21:46, «nel babbani set non ci vanno le bestemmie») dopo che `goliardia` e'
+# uscita su un canale ufficiale. Restano raggiungibili con `!trivial goliardia`
+# e dentro `tutte`: e' il complemento che le esclude, non il gioco.
+BABBANI_EXCLUDE = {"goliardia"}
 # Nomi alternativi accettati per un set. Chi scrive `!trivial bestemmie` non
 # deve trovare il vuoto.
 SET_ALIASES = {
@@ -390,7 +395,7 @@ class Impiccato:
             got = cats & NERD_CATS
             return got or None
         if key == "babbani":
-            got = cats - NERD_CATS
+            got = cats - NERD_CATS - BABBANI_EXCLUDE
             return got or None
         match = {c for c in cats if fold(c) == key}
         return match or None
@@ -401,7 +406,7 @@ class Impiccato:
         out = ["tutte"]
         if cats & NERD_CATS:
             out.append("nerd")
-        if cats - NERD_CATS:
+        if cats - NERD_CATS - BABBANI_EXCLUDE:
             out.append("babbani")
         return out + sorted(cats)
 
