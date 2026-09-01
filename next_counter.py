@@ -61,7 +61,10 @@ OPTIONS = {
     "search":      (383,  "Ricerca in finestra + storico di rete"),
     "multilingua": (362,  "cicchetto multilingua (it/fr/es/de)"),
     "encryption":  (65,   "Cifratura end-to-end dei messaggi privati"),
-    "radio":       (682,  "Player radio internet nel mini-player"),
+    # `radio` (#682) was RETIRED from the ballot on vjt's order (19:56,
+    # #grappa): it shipped, so it is no longer a "cosa facciamo dopo". Votes
+    # already cast for it are not silently reassigned -- tally() drops a slug
+    # that left the ballot, by design.
     # Scope: grappa SPEAKING IRCv3 to clients that connect to it, not
     # demanding IRCv3 from upstream networks -- morph raised that ambiguity on
     # #grappa. The slug carried the disambiguation until !wat existed to spell
