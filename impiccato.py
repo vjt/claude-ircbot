@@ -81,9 +81,10 @@ NETS = {
         "log": REPO / "bot.log",
         "fifo": REPO / "bot.send",
         "state": REPO / "impiccato_state.json",
-        # #sniffo aggiunto per ordine di vjt (#sbiffo 2026-08-24 21:54).
+        # #sniffo aggiunto per ordine di vjt (#sbiffo 2026-08-24 21:54),
+        # #italia per ordine di vjt (#sniffo 2026-08-29 21:43).
         # Le partite sono per canale: vedi load_state().
-        "chans": {"#sbiffo", "#sniffo"},
+        "chans": {"#sbiffo", "#sniffo", "#italia"},
     },
     "ircnet": {
         "log": REPO / "bot.ircnet.log",
