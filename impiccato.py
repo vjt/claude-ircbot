@@ -156,6 +156,12 @@ NERD_CATS = {"unix", "rete", "sicurezza", "programmazione", "web", "irc",
 # uscita su un canale ufficiale. Restano raggiungibili con `!trivial goliardia`
 # e dentro `tutte`: e' il complemento che le esclude, non il gioco.
 BABBANI_EXCLUDE = {"goliardia"}
+# Opt-out per canale: categorie che in QUEL canale non escono mai, nemmeno con
+# `!trivial tutte` e nemmeno chiedendole per nome — la richiesta viene negata.
+# Ordine di vjt (#italia 2026-09-03 20:48-20:49) dopo che `!trivial tutte` ha
+# rimesso in gioco le bestemmie su un canale ufficiale: togliere una categoria
+# dal complemento `babbani` non basta, `tutte` la ripescava lo stesso.
+CHAN_EXCLUDE = {"#italia": {"goliardia"}}
 # Nomi alternativi accettati per un set. Chi scrive `!trivial bestemmie` non
 # deve trovare il vuoto.
 SET_ALIASES = {
@@ -381,28 +387,38 @@ class Impiccato:
         """Le categorie che esistono davvero nel catalogo caricato."""
         return {d["cat"] for d in self.domande if d["cat"]}
 
-    def resolve_set(self, name):
+    def chan_exclude(self, chan):
+        """Le categorie vietate in questo canale. Nessun canale = nessun veto."""
+        return CHAN_EXCLUDE.get((chan or "").casefold(), set())
+
+    def resolve_set(self, name, chan=None):
         """Nome del set -> insieme di categorie, o None se non esiste.
 
         `tutte` e' tutto, `nerd` e' NERD_CATS, `babbani` e' il complemento, e
-        ogni singola categoria vale da sola come set."""
+        ogni singola categoria vale da sola come set.
+
+        Con `chan` il veto del canale si applica DOPO: un set che esiste ma che
+        li' resta vuoto torna l'insieme vuoto, non None. I due casi vanno detti
+        diversi a chi gioca — «non esiste» e «qui no» non sono la stessa cosa.
+        """
         key = fold(name).strip()
         key = SET_ALIASES.get(key, key)
         cats = self.cats()
         if key == "tutte":
-            return cats
-        if key == "nerd":
+            got = cats
+        elif key == "nerd":
             got = cats & NERD_CATS
-            return got or None
-        if key == "babbani":
+        elif key == "babbani":
             got = cats - NERD_CATS - BABBANI_EXCLUDE
-            return got or None
-        match = {c for c in cats if fold(c) == key}
-        return match or None
+        else:
+            got = {c for c in cats if fold(c) == key}
+        if not got:
+            return None
+        return got - self.chan_exclude(chan)
 
-    def set_names(self):
+    def set_names(self, chan=None):
         """I set da mostrare a chi scrive `!trivial` e basta."""
-        cats = self.cats()
+        cats = self.cats() - self.chan_exclude(chan)
         out = ["tutte"]
         if cats & NERD_CATS:
             out.append("nerd")
@@ -415,7 +431,7 @@ class Impiccato:
         # gia' 180 byte, e l'help attaccato in coda faceva 404 — oltre il
         # limite di riga, quindi troncato proprio dove c'e' scritto come si
         # gioca. Misurato, non stimato.
-        self.say(chan, f"📚 Set: {' · '.join(self.set_names())}.")
+        self.say(chan, f"📚 Set: {' · '.join(self.set_names(chan))}.")
         self.say(chan, f"🎯 Si parte con `!trivial <set>` — es. `!trivial babbani`. "
                        f"Partita da {DEFAULT_LIMIT} domande, `!trivial babbani 25` "
                        f"per cambiarne il numero. In gioco: `.h` una lettera, "
@@ -455,7 +471,10 @@ class Impiccato:
         if int(g.get("count", 0)) >= limit:
             self.end_game(chan, reason="limite")
             return
-        cats = self.resolve_set(g.get("set", "tutte")) or self.cats()
+        cats = self.resolve_set(g.get("set", "tutte"), chan)
+        # Il ripiego a "tutto il catalogo" rispetta il veto del canale, sennò
+        # una partita aperta prima dell'opt-out se lo mangerebbe al primo giro.
+        cats = cats or (self.cats() - self.chan_exclude(chan))
         d = self.pick(cats, exclude=g.get("asked", []))
         if d is None:
             self.end_game(chan, reason="esaurite")
@@ -602,18 +621,24 @@ class Impiccato:
                 # rispondere "set sconosciuto: 50" a chi ha solo scordato un
                 # pezzo.
                 self.say(chan, f"Il set va prima del numero: `!trivial <set> {lim}`. "
-                               f"Ci sono: {' · '.join(self.set_names())}.")
+                               f"Ci sono: {' · '.join(self.set_names(chan))}.")
                 return False
             if not want:
                 # Ordine di vjt: «si inizia un gioco solo scegliendo il set di
                 # domande a tema». Niente set, niente partita: si elenca.
                 self.elenco_set(chan)
                 return False
-            if self.resolve_set(want) is None:
+            cats = self.resolve_set(want, chan)
+            if cats is None:
                 self.say(chan, f"🤨 Set sconosciuto: {want}. "
-                               f"Ci sono: {' · '.join(self.set_names())}.")
+                               f"Ci sono: {' · '.join(self.set_names(chan))}.")
                 return False
-            cats = self.resolve_set(want)
+            if not cats:
+                # Esiste, ma qui e' vietato: negare e dirlo, invece di aprire
+                # una partita che finirebbe "esaurite" alla prima domanda.
+                self.say(chan, f"🚫 Il set {fold(want)} qui non si gioca. "
+                               f"Ci sono: {' · '.join(self.set_names(chan))}.")
+                return False
             n = sum(1 for d in self.domande if d["cat"] in cats)
             limit = max(1, int(lim)) if lim else DEFAULT_LIMIT
             # Il limite annunciato e' quello vero: se il set ha meno domande
@@ -858,6 +883,32 @@ def selftest():
         assert g9.resolve_set("tutte") == {"unix", "moda"}
         assert g9.resolve_set("bestemmie") is None, "alias verso una cat assente = None"
         assert g9.resolve_set("scarpe") == {"moda"}, "alias scarpe -> moda"
+
+        # Opt-out per canale: su #italia la goliardia non esce nemmeno da
+        # `tutte`, e chiederla per nome viene negato — non e' un set che non
+        # esiste, e' un set che li' non si gioca.
+        gol = mix + [{"q": "qg", "a": "Porco", "cat": "goliardia"}]
+        g9b = Impiccato("test", "/dev/null", "", st, {"#italia", "#t"}, gol,
+                        talk=False)
+        assert g9b.resolve_set("tutte", "#t") == {"unix", "moda", "goliardia"}
+        assert g9b.resolve_set("tutte", "#italia") == {"unix", "moda"}
+        assert g9b.resolve_set("bestemmie", "#t") == {"goliardia"}
+        assert g9b.resolve_set("bestemmie", "#italia") == set(), "esiste ma qui no"
+        assert g9b.resolve_set("pokemon", "#italia") is None, "sconosciuto != vietato"
+        assert "goliardia" not in g9b.set_names("#italia")
+        g9b.sent.clear()
+        assert g9b.handle("a", "#italia", "!trivial bestemmie") is False
+        assert g9b.game("#italia") is None
+        assert "non si gioca" in g9b.sent[-1][1], g9b.sent[-1]
+        # e con `tutte` la partita parte, ma la goliardia non ci finisce dentro.
+        for _ in range(6):
+            g9b.handle("a", "#italia", "!trivial tutte 3")
+            assert g9b.game("#italia")["a"] != "Porco", g9b.game("#italia")
+            g9b.handle("a", "#italia", "!stop")
+        # sugli altri canali resta tutto com'era.
+        assert g9b.handle("a", "#t", "!trivial bestemmie") is True
+        assert g9b.game("#t")["a"] == "Porco", g9b.game("#t")
+        g9b.handle("a", "#t", "!stop")
 
         # `!trivial stop` chiude, non viene letto come nome di un set.
         g9.sent.clear()
