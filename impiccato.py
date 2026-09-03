@@ -108,6 +108,14 @@ VOCALI = set("aeiou")
 # Portato da 30 a 10 su suo ordine (#sbiffo 2026-08-25 19:56): 30 domande sono
 # una maratona, il canale si stanca prima del traguardo.
 DEFAULT_LIMIT = 10
+# Tetto in BYTE di una riga accorpata. Il flood non si misura in caratteri, si
+# misura in PRIVMSG: saBOTage ha kickato il bot da #italia (2026-09-03 21:03,
+# «flood») perche' una risposta indovinata ne sparava TRE di fila — esito,
+# domanda nuova, maschera — e chi gioca risponde ogni tre secondi, cioe' una
+# riga al secondo tonda. Accorpando, la stessa partita ne manda una sola.
+# 380 e non 400: il margine copre il prefisso `PRIVMSG <chan> :` che il server
+# conta dentro i 512 della riga IRC.
+MAX_LINE = 380
 
 PRIVMSG_PAT = re.compile(
     r'< :(?P<nick>[^!@\s]+)!(?P<ident>[^@\s]+)@(?P<host>\S+)\s+'
@@ -307,6 +315,33 @@ def podio(rows, top=10):
         for i, r in enumerate(rows[:top]))
 
 
+def joined_lines(parts, limit=MAX_LINE, sep="  ·  "):
+    """Impacchetta le parti nel minor numero di righe che stia sotto `limit`.
+
+    Il taglio si fa sul confine fra parti, MAI dentro una: una domanda tagliata
+    a meta' e' peggio di due righe (vedi feedback_no_orphan_line_tails). Una
+    parte piu' lunga del limite da sola resta lunga — la spezza il bot, e li'
+    il flood non c'entra: e' una riga sola comunque.
+
+    Il limite si misura in BYTE, non in caratteri: le emoji del gioco ne
+    pesano quattro l'una e a contare i caratteri si sfora senza accorgersene.
+    """
+    out, cur = [], ""
+    for p in parts:
+        p = (p or "").strip()
+        if not p:
+            continue
+        cand = f"{cur}{sep}{p}" if cur else p
+        if cur and len(cand.encode("utf-8")) > limit:
+            out.append(cur)
+            cur = p
+        else:
+            cur = cand
+    if cur:
+        out.append(cur)
+    return out
+
+
 # -------------------------------------------------------------------- gioco
 
 class Impiccato:
@@ -340,6 +375,11 @@ class Impiccato:
             pass
         finally:
             os.close(fd)
+
+    def emit(self, chan, parts):
+        """Manda le parti accorpate: una riga sola se ci stanno."""
+        for line in joined_lines(parts):
+            self.say(chan, line)
 
     # --- ciclo delle domande --------------------------------------------
 
@@ -437,7 +477,7 @@ class Impiccato:
                        f"per cambiarne il numero. In gioco: `.h` una lettera, "
                        f"`.v` le vocali, `!stop` chiude, `!classifica` i punti.")
 
-    def start_round(self, chan, setname="tutte", now=None, limit=None):
+    def start_round(self, chan, setname="tutte", now=None, limit=None, lead=()):
         """Apre una partita nuova nel canale e mette in gioco la prima domanda.
 
         `asked` e `count` vivono DENTRO la partita: sono la memoria che vjt ha
@@ -457,19 +497,24 @@ class Impiccato:
             "alt": [],
             "last": int(now if now is not None else time.time()),
         }
-        self.next_question(chan, now=now)
+        self.next_question(chan, now=now, lead=lead)
 
-    def next_question(self, chan, now=None):
+    def next_question(self, chan, now=None, lead=()):
         """La domanda successiva, o la fine della partita.
 
         Due modi di finire, e vanno detti diversi: il limite raggiunto e' il
         traguardo, il set esaurito e' un catalogo troppo corto per il limite
         chiesto. Chi gioca deve capire quale dei due gli e' capitato.
+
+        `lead` sono le parti che precedono la domanda sulla STESSA riga —
+        l'esito della risposta appena indovinata. Va passato fin dentro
+        `end_game`, sennò l'ultima vittoria della partita si perde per strada.
         """
+        lead = list(lead)
         g = self.state["games"][chan]
         limit = int(g.get("limit", DEFAULT_LIMIT))
         if int(g.get("count", 0)) >= limit:
-            self.end_game(chan, reason="limite")
+            self.end_game(chan, reason="limite", lead=lead)
             return
         cats = self.resolve_set(g.get("set", "tutte"), chan)
         # Il ripiego a "tutto il catalogo" rispetta il veto del canale, sennò
@@ -477,7 +522,7 @@ class Impiccato:
         cats = cats or (self.cats() - self.chan_exclude(chan))
         d = self.pick(cats, exclude=g.get("asked", []))
         if d is None:
-            self.end_game(chan, reason="esaurite")
+            self.end_game(chan, reason="esaurite", lead=lead)
             return
         g["q"], g["a"] = d["q"], d["a"]
         g["alt"], g["revealed"] = d.get("alt", []), []
@@ -487,10 +532,10 @@ class Impiccato:
         # La memoria lunga resta troncata al catalogo: e' varieta' fra partite,
         # non un archivio.
         self.state["asked"] = (self.state.get("asked", []) + [d["q"]])[-len(self.domande):]
-        self.say(chan, f"❓ [{g['count']}/{limit}] {d['q']}")
-        self.say(chan, mask_of(d["a"], set()))
+        self.emit(chan, lead + [f"❓ [{g['count']}/{limit}] {d['q']}",
+                                mask_of(d["a"], set())])
 
-    def end_game(self, chan, reason="limite"):
+    def end_game(self, chan, reason="limite", lead=()):
         """Chiude la partita e stampa il punteggio DI QUESTA partita.
 
         La hall of fame resta su `!classifica`: a fine partita chi ha giocato
@@ -505,14 +550,14 @@ class Impiccato:
         head = (f"🏁 Partita finita: {n} domande."
                 if reason == "limite"
                 else f"🏁 Finite le domande del set dopo {n}.")
-        self.say(chan, f"{head} `!trivial <set> [n]` per un'altra.")
         rows = sorted(g.get("points", {}).values(),
                       key=lambda r: (-r["points"], r["nick"].casefold()))
-        if not rows:
-            self.say(chan, "😴 Punteggio partita: nessuno ha indovinato niente.")
-            return
-        self.say(chan, f"🏆 Punteggio partita: {podio(rows)} — "
-                       f"`!classifica` per la hall of fame.")
+        tail = (f"🏆 Punteggio partita: {podio(rows)} — "
+                f"`!classifica` per la hall of fame."
+                if rows
+                else "😴 Punteggio partita: nessuno ha indovinato niente.")
+        self.emit(chan, list(lead) + [f"{head} `!trivial <set> [n]` per un'altra.",
+                                      tail])
 
     def stop_round(self, chan, reason="idle"):
         """reason: 'idle' = scaduta per silenzio, 'richiesto' = qualcuno ha
@@ -538,11 +583,15 @@ class Impiccato:
         # (ordine di vjt, #sbiffo 16:20). Vive dentro `g`, quindi muore con lei.
         pts = g.setdefault("points", {})
         pts[key] = {"nick": canon_nick(nick), "points": int(pts.get(key, {}).get("points", 0)) + 1}
-        self.say(chan, f"✅ Brava/o {canon_nick(nick)}, la risposta era: {answer}!!!")
+        # L'esito NON esce da solo: viaggia in testa alla riga della domanda
+        # nuova. Tre PRIVMSG per ogni risposta indovinata sono il flood che si
+        # e' preso il kick da #italia — vedi MAX_LINE.
         # La partita NON si ricrea a ogni vittoria: e' la stessa che va avanti,
         # e con lei il conteggio e l'elenco delle domande gia' uscite. Si resta
         # nel tema scelto all'inizio, che vive dentro `g`.
-        self.next_question(chan, now=now)
+        self.next_question(
+            chan, now=now,
+            lead=[f"✅ Brava/o {canon_nick(nick)}, la risposta era: {answer}!!!"])
 
     def reveal(self, chan, letters):
         """Scopre un insieme di lettere. True se almeno una era coperta."""
@@ -608,8 +657,9 @@ class Impiccato:
                 # limite a meta' round butterebbe via la maschera di chi sta
                 # giocando e sposterebbe il traguardo sotto i suoi piedi.
                 g["last"] = now
-                self.say(chan, f"❓ [{g.get('count', 1)}/{g.get('limit', DEFAULT_LIMIT)}] {g['q']}")
-                self.say(chan, mask_of(g["a"], set(g["revealed"])))
+                self.emit(chan, [
+                    f"❓ [{g.get('count', 1)}/{g.get('limit', DEFAULT_LIMIT)}] {g['q']}",
+                    mask_of(g["a"], set(g["revealed"]))])
                 return True
             # `!trivial 50`: il lazy del gruppo `set` si mangia il numero se e'
             # l'unica cosa scritta, quindi il limite nudo arriva qui dentro
@@ -644,10 +694,13 @@ class Impiccato:
             # Il limite annunciato e' quello vero: se il set ha meno domande
             # del limite chiesto, la partita finira' li' e dirlo prima evita
             # che sembri un troncamento arbitrario.
-            self.say(chan, f"🎲 Trivial, set {fold(want)}: {n} domande, "
-                           f"partita da {min(limit, n)}. "
-                           f"`.h` una lettera, `.v` le vocali, `!stop` chiude.")
-            self.start_round(chan, setname=want, now=now, limit=limit)
+            # Anche l'apertura viaggia in testa alla prima domanda, non su una
+            # riga sua: due PRIVMSG in fila all'avvio sono meta' del flood.
+            self.start_round(
+                chan, setname=want, now=now, limit=limit,
+                lead=[f"🎲 Trivial, set {fold(want)}: {n} domande, "
+                      f"partita da {min(limit, n)}. "
+                      f"`.h` una lettera, `.v` le vocali, `!stop` chiude."])
             return True
 
         # Da qui in poi serve una partita viva in QUESTO canale.
@@ -745,7 +798,11 @@ def selftest():
         g = Impiccato("test", "/dev/null", "", st, {"#t"}, dom, talk=False)
 
         g.handle("a", "#t", "!trivial t")
-        assert g.sent[-1] == ("#t", "----- ---"), g.sent[-1]
+        # Apertura, domanda e maschera viaggiano sulla stessa riga: UN PRIVMSG,
+        # non tre. E' il fix del kick per flood — vedi MAX_LINE.
+        assert len(g.sent) == 1, g.sent
+        assert g.sent[0][1].startswith("🎲 Trivial, set t:"), g.sent[0]
+        assert g.sent[0][1].endswith("❓ [1/10] Domanda di prova?  ·  ----- ---"), g.sent[0]
 
         g.sent.clear()
         g.handle("a", "#t", "z")            # lettera assente -> silenzio
@@ -764,12 +821,16 @@ def selftest():
 
         g.sent.clear()
         g.handle("b", "#t", "Token JWT")    # risposta intera -> vittoria
-        assert g.sent[0] == ("#t", "✅ Brava/o b, la risposta era: Token JWT!!!"), g.sent[0]
         assert g.state["scores"]["b"]["points"] == 1
         # Catalogo di UNA domanda: non c'e' niente di nuovo da chiedere, quindi
         # la partita finisce invece di ripresentare la stessa.
         assert g.game("#t") is None, g.game("#t")
-        assert "Finite le domande" in g.sent[1][1], g.sent[1]
+        # Esito + fine partita + punteggio: tutto su UNA riga, e l'esito NON si
+        # perde per strada solo perche' la partita e' finita li'.
+        assert len(g.sent) == 1, g.sent
+        assert "✅ Brava/o b, la risposta era: Token JWT!!!" in g.sent[0][1], g.sent[0]
+        assert "Finite le domande" in g.sent[0][1], g.sent[0]
+        assert "🏆 Punteggio partita" in g.sent[0][1], g.sent[0]
 
         # sinonimo accettato: la risposta canonica esce comunque intera
         g6 = Impiccato("test", "/dev/null", "", st, {"#t"},
@@ -777,8 +838,19 @@ def selftest():
         g6.handle("a", "#t", "!trivial t")
         g6.sent.clear()
         g6.handle("c", "#t", "fifo")
-        assert g6.sent[0] == ("#t", "✅ Brava/o c, la risposta era: Coda!!!"), g6.sent[0]
+        assert "✅ Brava/o c, la risposta era: Coda!!!" in g6.sent[0][1], g6.sent[0]
         assert g6.state["scores"]["c"]["points"] == 1
+
+        # L'accorpamento taglia SOLO fra le parti, mai dentro una: una domanda
+        # lunga resta intera anche a costo di una riga sua.
+        lunga = "x" * 300
+        assert joined_lines(["a", "b"]) == ["a  ·  b"]
+        assert joined_lines([lunga, lunga]) == [lunga, lunga]
+        assert joined_lines(["", "  ", "solo"]) == ["solo"]
+        # Il conto e' in byte, non in caratteri: 200 emoji da 4 byte l'una non
+        # stanno su una riga sola, anche se sono 200 "caratteri".
+        emo = "🏆" * 100
+        assert len(joined_lines([emo, emo])) == 2, joined_lines([emo, emo])
 
         # `.h` scopre una lettera e non due
         g2 = Impiccato("test", "/dev/null", "", st, {"#t"}, dom, talk=False)
@@ -862,7 +934,7 @@ def selftest():
         g8.sent.clear()
         assert g8.handle("a", "#t", "!trivial babbani") is True
         assert g8.game("#t")["a"] == "Scarpa", g8.game("#t")
-        assert g8.sent[-1] == ("#t", "------"), g8.sent[-1]
+        assert g8.sent[-1][1].endswith("------"), g8.sent[-1]
 
         # il tema regge fra una domanda e l'altra: con due domande di moda,
         # dopo la vittoria la partita resta di la' e non sborda nel nerd.
