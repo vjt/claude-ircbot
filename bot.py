@@ -53,6 +53,14 @@ NICK = _cfg("IRC_NICK", "vjt-claude")
 IDENT = _cfg("IRC_IDENT", "claude")
 REAL = _cfg("IRC_REAL", "github.com/vjt/claude-ircbot")
 
+# Source address to bind before connecting. Empty = let the kernel pick, which
+# is what every instance did until now. It exists because two bots can share a
+# jail and still need two different vhosts: on Azzurra the vhost is the rDNS of
+# the address we come from, so the address IS the identity, and the jail's
+# default source would hand both bots the same one. Order of vjt, #sbiffo
+# 2026-09-09 23:48. Port stays 0 — we want the address, not a fixed port.
+BIND = _cfg("IRC_BIND", "")
+
 # TLS certificate verification. Default ON — Azzurra and Libera both present a
 # chain that validates against the system CA bundle, and there is a password on
 # the wire there (NickServ), so the default must stay strict.
@@ -715,7 +723,9 @@ def main():
         # checking still enabled raises ValueError.
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    raw = socket.create_connection((HOST, PORT), timeout=30)
+    raw = socket.create_connection(
+        (HOST, PORT), timeout=30, source_address=((BIND, 0) if BIND else None)
+    )
     # Belt-and-suspenders against silent TCP death (NAT/ISP drops):
     # kernel keepalive probes + app-level recv timeout. Server PINGs us
     # ~3-5min; 420s timeout on recv surfaces a stalled socket as
