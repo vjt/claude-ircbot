@@ -255,6 +255,8 @@ the bookkeeping.
 - **`roll_counter.py`** — tails `bot.log` and scores `::Roll` CTCP-action
   games plus an open-set Italian blasphemy matcher, writing a leaderboard
   to `rolls.json`. Has a `stats [N]` subcommand for terminal output.
+  **Retired as a daemon** — it is kept because its matchers are imported
+  as a library, not because anything still runs it.
 - **`stats.py`** — renders `rolls.json` into at most five PRIVMSG-safe
   lines (`--compact` for one). `--say <nick|#chan>` pushes them straight
   into the FIFO.
@@ -264,26 +266,21 @@ the bookkeeping.
   IRC hosts are never stored. State stays private next to the bot; a
   `{nick, ts, comment}` projection is re-rendered on every append into a
   public JSON that a static page polls.
-- **`cena_counter.py`** — same shape, different semantics:
-  `!cena <city> [date][, date…]` (and `!pranzo`, which votes the meal as
-  a third dimension) is one vote per nick where the **last vote replaces
-  the previous one entirely**. Dates split on commas only — people write
-  "11 settembre", and splitting on whitespace turned one date into two. A
-  vote is silent; bare `!cena` answers with a single standings line,
-  because the page is the feedback surface.
-- **`list_sidecar.py`** — owns the `!list` gag on `#sniffo` / `#sbiffo`
-  outright, so the agent never answers it and there is nothing to
-  coordinate. Emits canonical iroffer/XDCC `LIST` output, generated
-  combinatorially (titles × tags × groups × sizes) so it is never twice
-  the same.
+The game sidecars that used to live here — the meal poll, the hangman,
+the `!list` gag, the channel-stats summary, the nun hunt — have **moved
+out of this repo**. They were never about the bridge: they are games that
+happen to speak IRC, they now run as their own bots on their own host,
+and keeping a second copy here only guaranteed the two would drift. What
+stays is the bridge and the sidecars that serve *this* session.
 
 ### systemd
 
-`systemd/` ships seven user units — two bot instances
+`systemd/` ships six user units — three bot instances
 (`vjt-claude-bot.service` for Azzurra, `vjt-claude-libera-bot.service` for
-Libera.Chat) and one per sidecar (`aup-watchdog`, `roll-counter`,
-`firma-counter`, `cena-counter`, `list-sidecar`). Drop (or symlink) the
-unit files into `~/.config/systemd/user/` and enable what you want:
+Libera.Chat, `vjt-claude-ircnet-bot.service` for IRCnet) and one per
+sidecar (`aup-watchdog`, `roll-counter`, `firma-counter`). Drop (or
+symlink) the unit files into `~/.config/systemd/user/` and enable what
+you want:
 
 ```bash
 systemctl --user enable --now vjt-claude-bot.service

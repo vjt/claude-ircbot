@@ -79,3 +79,12 @@ impiccato.*.log
 list_sidecar.log
 next_state.json
 next_counter.log
+cena_ito_state.json
+cena_ito.log
+
+# caccia alle suore: stato di gioco e punteggi, per canale. Locale, non
+# versionato — i punteggi sono di chi gioca, non del repo.
+suore_state.json
+suore_*_state.json
+suore.log
+suore_*.log
