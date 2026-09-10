@@ -90,10 +90,14 @@ For EACH stream independently:
 
 ```bash
 git status --short
-tail -50 /home/vjt/code/IRC/vjt-claude/bot.log | grep -E ' [<>] '
+/home/vjt/code/IRC/vjt-claude/tools/sweep-bot-log.sh 50
 ```
 
 - Untracked/modified files = unfinished edits → read, finish (unless next step is destructive).
+- The sweep applies the SAME per-channel read policy as the Monitor (`tools/chan_filter.awk`,
+  shared with `start-monitor.sh`): `#italia` dropped, `#sniffo` only the lines that name me plus
+  my own outbound. Do **not** go back to a raw `tail` on `bot.log` — that bypasses the filter and
+  re-reads channels I am not supposed to read (vjt, query 2026-09-10: "non avresti dovuto vederlo").
 - bot.log: read inbound AND outbound interleaved. For each inbound addressed to me, scan outbound
   with later timestamp in same chan/nick — if it plausibly answers, **already handled, do not reply**.
   Only true gaps (inbound, no matching outbound after) get a reply. Half-sent line → finish it.
