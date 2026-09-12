@@ -362,9 +362,36 @@ def split_say(target, text, origin=None):
 # vuole l'IP v4 come intero decimale a 32 bit, dove un v6 non ci sta. Sul campo
 # irssi, HexChat e mIRC 7 leggono l'indirizzo v6 letterale in quel campo, quindi
 # e' quello che mandiamo. Chi sta su v4 puro non prende niente: e' il prezzo.
+#
+# La porta non puo' essere effimera: dietro un firewall la finestra va aperta
+# in anticipo, e non si apre quello che sceglie il kernel. BOT_DCC_PORT_MIN /
+# MAX danno un intervallo fisso da rispecchiare nella regola di pf; a zero (il
+# default) si torna alla porta effimera, buona solo dove non c'e' firewall.
 DCC_DIR = _cfg("BOT_DCC_DIR", os.path.join(HERE, "dcc"))
 DCC_TIMEOUT = int(_cfg("BOT_DCC_TIMEOUT", "180"))
+DCC_PORT_MIN = int(_cfg("BOT_DCC_PORT_MIN", "0"))
+DCC_PORT_MAX = int(_cfg("BOT_DCC_PORT_MAX", "0"))
 DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
+
+
+def _dcc_bind(srv):
+    """Bind the listener inside the configured range, or ephemeral if unset.
+
+    Every offer holds its port for the whole transfer, so with N offers in
+    flight the first N ports of the range are taken: we walk it until one
+    binds. Range exhausted -> the caller refuses the offer.
+    """
+    if DCC_PORT_MIN <= 0 or DCC_PORT_MAX < DCC_PORT_MIN:
+        srv.bind((BIND, 0))
+        return
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    for port in range(DCC_PORT_MIN, DCC_PORT_MAX + 1):
+        try:
+            srv.bind((BIND, port))
+        except OSError:
+            continue
+        return
+    raise OSError(f"no free port in {DCC_PORT_MIN}-{DCC_PORT_MAX}")
 
 
 def _dcc_serve(srv, path, nick, name):
@@ -412,7 +439,7 @@ def dcc_send(nick, name, origin=None):
     srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     try:
         srv.settimeout(DCC_TIMEOUT)
-        srv.bind((BIND, 0))
+        _dcc_bind(srv)
         srv.listen(1)
     except Exception as e:
         srv.close()
