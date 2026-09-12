@@ -11,7 +11,8 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     NOTICE <target> <text>
     RAW <irc line>          -> send as-is
     JOIN <chan> / PART <chan> / WHOIS <nick> / QUIT [reason]
-    DCC <nick> <file>       -> offer $BOT_DCC_DIR/<file> over DCC SEND (IPv6)
+    DCC <nick> <file> [name] -> offer $BOT_DCC_DIR/<file> over DCC SEND (IPv6),
+                               announcing [name] to the peer if given (else <file>)
 
   Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
   The tag changes NOTHING on the wire — it is only stamped into bot.log,
@@ -274,7 +275,13 @@ def dm_blocked(nick):
 def dm_reject_once(nick):
     """Send the 'talk in channel' line at most once per DM_REJECT_COOLDOWN per
     nick. NOTICE, not PRIVMSG: RFC-correct for an automated reply, and it keeps
-    two bots from ping-ponging auto-replies at each other."""
+    two bots from ping-ponging auto-replies at each other.
+
+    An empty BOT_DM_REJECT disables the reply entirely (EliteWarez: "con me si
+    parla in canale" is a channel act, not a private rebound). The DM is still
+    dropped upstream — only the outbound rebound is suppressed."""
+    if not DM_REJECT_MSG:
+        return False
     n = nick.lower()
     now = time.monotonic()
     with dm_lock:
@@ -372,6 +379,10 @@ DCC_TIMEOUT = int(_cfg("BOT_DCC_TIMEOUT", "180"))
 DCC_PORT_MIN = int(_cfg("BOT_DCC_PORT_MIN", "0"))
 DCC_PORT_MAX = int(_cfg("BOT_DCC_PORT_MAX", "0"))
 DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
+# The offer name is what the peer's client shows and never touches the disk,
+# so it needs no traversal guard — only CTCP safety (no spaces, the field
+# separator) and a length that fits a scene title (~78) plus extension.
+DCC_OFFER_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,120}\Z")
 
 
 def _dcc_bind(srv):
@@ -422,11 +433,19 @@ def _dcc_serve(srv, path, nick, name):
         conn.close()
 
 
-def dcc_send(nick, name, origin=None):
-    # The name comes from a sidecar, and the CTCP separates its fields with
-    # spaces and cannot quote: no path, no traversal, no spaces.
+def dcc_send(nick, name, origin=None, offer=None):
+    # `name` is the file on disk; `offer` is the name announced to the peer,
+    # defaulting to `name`. Both come from a sidecar and ride a CTCP whose
+    # fields are space-separated and unquotable: no path, no traversal, no
+    # spaces. `name` must stay a bare basename (it opens a file); `offer`
+    # never touches disk, so it only needs to be CTCP-safe.
     if not DCC_NAME_PAT.match(name):
         emit("CMD_ERROR", "dcc-bad-name", repr(name))
+        return
+    if offer is None:
+        offer = name
+    elif not DCC_OFFER_NAME_PAT.match(offer):
+        emit("CMD_ERROR", "dcc-bad-offer", repr(offer))
         return
     path = os.path.join(DCC_DIR, name)
     if not os.path.isfile(path):
@@ -447,10 +466,11 @@ def dcc_send(nick, name, origin=None):
         return
     port = srv.getsockname()[1]
     threading.Thread(
-        target=_dcc_serve, args=(srv, path, nick, name), daemon=True
+        target=_dcc_serve, args=(srv, path, nick, offer), daemon=True
     ).start()
-    send_raw(f"PRIVMSG {nick} :\x01DCC SEND {name} {BIND} {port} {size}\x01", origin)
-    emit("DCC_OFFER", f"TO={nick}", f"FILE={name}", f"PORT={port}", f"SIZE={size}")
+    send_raw(f"PRIVMSG {nick} :\x01DCC SEND {offer} {BIND} {port} {size}\x01", origin)
+    emit("DCC_OFFER", f"TO={nick}", f"FILE={name}", f"OFFER={offer}",
+         f"PORT={port}", f"SIZE={size}")
 
 
 def run_startup():
@@ -812,10 +832,12 @@ def process_cmd(line):
         send_raw(rest, origin)
     elif verb == "DCC":
         if " " not in rest:
-            emit("CMD_ERROR", "DCC needs <nick> <file>", repr(rest))
+            emit("CMD_ERROR", "DCC needs <nick> <file> [name]", repr(rest))
             return
-        nick, name = rest.split(" ", 1)
-        dcc_send(nick, name.strip(), origin)
+        parts = rest.split(" ", 2)
+        nick, name = parts[0], parts[1].strip()
+        offer = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
+        dcc_send(nick, name, origin, offer)
     else:
         emit("CMD_ERROR", "unknown-verb", repr(verb),
              "valid: SAY ACT NOTICE JOIN PART WHOIS QUIT RAW DCC")
