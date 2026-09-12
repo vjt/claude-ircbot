@@ -11,6 +11,7 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     NOTICE <target> <text>
     RAW <irc line>          -> send as-is
     JOIN <chan> / PART <chan> / WHOIS <nick> / QUIT [reason]
+    DCC <nick> <file>       -> offer $BOT_DCC_DIR/<file> over DCC SEND (IPv6)
 
   Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
   The tag changes NOTHING on the wire — it is only stamped into bot.log,
@@ -350,6 +351,79 @@ def split_say(target, text, origin=None):
             cut += 1  # keep the breaking space on this chunk, don't strip it
         send_raw(f"PRIVMSG {target} :{b[:cut].decode('utf-8', errors='ignore')}", origin)
         b = b[cut:]
+
+
+# DCC SEND. Serve a EliteWarez: il `!list` offre "warez", e prima o poi uno
+# prova a scaricarli. Un listener effimero sull'indirizzo da cui usciamo, il
+# CTCP con la porta, UNA connessione servita e chiuso.
+#
+# Solo IPv6, ordine di vjt (#sbiffo 2026-09-12 01:29, "va bene facciamolo solo
+# ipv6"): la jail di Convento non ha un indirizzo v4, e comunque il DCC storico
+# vuole l'IP v4 come intero decimale a 32 bit, dove un v6 non ci sta. Sul campo
+# irssi, HexChat e mIRC 7 leggono l'indirizzo v6 letterale in quel campo, quindi
+# e' quello che mandiamo. Chi sta su v4 puro non prende niente: e' il prezzo.
+DCC_DIR = _cfg("BOT_DCC_DIR", os.path.join(HERE, "dcc"))
+DCC_TIMEOUT = int(_cfg("BOT_DCC_TIMEOUT", "180"))
+DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
+
+
+def _dcc_serve(srv, path, nick, name):
+    """Accept one peer, push the file, hang up. Runs off the reader thread."""
+    try:
+        conn, _peer = srv.accept()
+    except Exception as e:
+        emit("DCC_TIMEOUT", f"TO={nick}", f"FILE={name}", repr(e))
+        return
+    finally:
+        srv.close()
+    sent = 0
+    try:
+        # accept() does NOT inherit the listener's timeout reliably; set it.
+        conn.settimeout(DCC_TIMEOUT)
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                conn.sendall(chunk)
+                sent += len(chunk)
+    except Exception as e:
+        emit("DCC_ERROR", f"TO={nick}", f"FILE={name}", f"SENT={sent}", repr(e))
+    else:
+        emit("DCC_DONE", f"TO={nick}", f"FILE={name}", f"BYTES={sent}")
+    finally:
+        conn.close()
+
+
+def dcc_send(nick, name, origin=None):
+    # The name comes from a sidecar, and the CTCP separates its fields with
+    # spaces and cannot quote: no path, no traversal, no spaces.
+    if not DCC_NAME_PAT.match(name):
+        emit("CMD_ERROR", "dcc-bad-name", repr(name))
+        return
+    path = os.path.join(DCC_DIR, name)
+    if not os.path.isfile(path):
+        emit("CMD_ERROR", "dcc-no-file", path)
+        return
+    if not BIND:
+        emit("CMD_ERROR", "dcc-no-bind", "IRC_BIND empty: no address, no offer")
+        return
+    size = os.path.getsize(path)
+    srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        srv.settimeout(DCC_TIMEOUT)
+        srv.bind((BIND, 0))
+        srv.listen(1)
+    except Exception as e:
+        srv.close()
+        emit("CMD_ERROR", "dcc-listen-fail", repr(e))
+        return
+    port = srv.getsockname()[1]
+    threading.Thread(
+        target=_dcc_serve, args=(srv, path, nick, name), daemon=True
+    ).start()
+    send_raw(f"PRIVMSG {nick} :\x01DCC SEND {name} {BIND} {port} {size}\x01", origin)
+    emit("DCC_OFFER", f"TO={nick}", f"FILE={name}", f"PORT={port}", f"SIZE={size}")
 
 
 def run_startup():
@@ -709,9 +783,15 @@ def process_cmd(line):
         send_raw(f"QUIT :{rest or 'bye'}", origin)
     elif verb == "RAW":
         send_raw(rest, origin)
+    elif verb == "DCC":
+        if " " not in rest:
+            emit("CMD_ERROR", "DCC needs <nick> <file>", repr(rest))
+            return
+        nick, name = rest.split(" ", 1)
+        dcc_send(nick, name.strip(), origin)
     else:
         emit("CMD_ERROR", "unknown-verb", repr(verb),
-             "valid: SAY ACT NOTICE JOIN PART WHOIS QUIT RAW")
+             "valid: SAY ACT NOTICE JOIN PART WHOIS QUIT RAW DCC")
 
 
 def main():
