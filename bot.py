@@ -436,12 +436,24 @@ def _dcc_drain(conn):
     return last
 
 
+def _dcc_event(kind, *parts):
+    """Emit a DCC lifecycle event on BOTH stdout and bot.log.
+
+    stdout is the Monitor's stream; bot.log is what the sidecars tail. A
+    sidecar that wants to announce "nick ha ricevuto il file" only follows
+    bot.log (it is the PRIVMSG stream), so without this second write the
+    completion would be invisible to it. Same trick as IDLE above.
+    """
+    emit(kind, *parts)
+    log("*", kind + " " + " ".join(str(p) for p in parts))
+
+
 def _dcc_serve(srv, path, nick, name):
     """Accept one peer, push the file, hang up. Runs off the reader thread."""
     try:
         conn, _peer = srv.accept()
     except Exception as e:
-        emit("DCC_TIMEOUT", f"TO={nick}", f"FILE={name}", repr(e))
+        _dcc_event("DCC_TIMEOUT", f"TO={nick}", f"FILE={name}", repr(e))
         return
     finally:
         srv.close()
@@ -457,11 +469,11 @@ def _dcc_serve(srv, path, nick, name):
                 conn.sendall(chunk)
                 sent += len(chunk)
     except Exception as e:
-        emit("DCC_ERROR", f"TO={nick}", f"FILE={name}", f"SENT={sent}", repr(e))
+        _dcc_event("DCC_ERROR", f"TO={nick}", f"FILE={name}", f"SENT={sent}", repr(e))
     else:
         ack = _dcc_drain(conn)
-        emit("DCC_DONE", f"TO={nick}", f"FILE={name}", f"BYTES={sent}",
-             f"ACK={ack if ack is not None else 'none'}")
+        _dcc_event("DCC_DONE", f"TO={nick}", f"FILE={name}", f"BYTES={sent}",
+                   f"ACK={ack if ack is not None else 'none'}")
     finally:
         conn.close()
 
