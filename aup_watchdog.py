@@ -72,9 +72,21 @@ PRE_CLEAR_PROMPT = (
 )
 
 STUCK_PATTERNS = re.compile(
-    r"(unable to respond to this request|appears to violate our Usage Policy|Usage Policy)",
+    r"(unable to respond to this request|appears to violate our Usage Policy|Usage Policy"
+    r"|safeguards flagged this message|Cyber Verification Program)",
     re.IGNORECASE,
 )
+
+# Structural refusal markers. Text matching alone is not enough: on 2026-09-12
+# 23:57 UTC a session latched on "API Error: Opus 4.8's safeguards flagged this
+# message ... Cyber Verification Program", which matched none of the old
+# patterns, and every later turn refused identically — 15 minutes of silence
+# with vjt typing "beh??" / "wtf?!" until he cleared by hand. The transcript
+# carries an unambiguous structural signal for these: an assistant record with
+# stop_reason == "refusal", plus a system record whose subtype names it.
+# Match on those and the wording of the day stops mattering.
+REFUSAL_STOP_REASONS = {"refusal"}
+REFUSAL_SUBTYPE = re.compile(r"refusal", re.IGNORECASE)
 
 
 _log_state: dict[str, float | str | int] = {"last_msg": "", "last_ts": 0.0, "repeat": 0}
@@ -238,6 +250,31 @@ def line_is_assistant_turn(line: str) -> bool:
     return rec.get("type") == "assistant"
 
 
+def line_matches_refusal(line: str) -> str | None:
+    """Structural refusal check — returns a short reason, or None.
+
+    Two shapes, both emitted when the API refuses instead of answering:
+      {"type":"assistant","message":{"stop_reason":"refusal",...}}
+      {"type":"system","subtype":"model_refusal_no_fallback",...}
+    A latched session repeats these on every turn, so catching either one
+    is enough; the debounce keeps the retries from stacking clears.
+    """
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    typ = rec.get("type")
+    if typ == "assistant":
+        msg = rec.get("message", {})
+        if isinstance(msg, dict) and msg.get("stop_reason") in REFUSAL_STOP_REASONS:
+            return "stop_reason=refusal"
+    elif typ == "system":
+        subtype = rec.get("subtype", "")
+        if isinstance(subtype, str) and REFUSAL_SUBTYPE.search(subtype):
+            return f"system/{subtype}"
+    return None
+
+
 def line_matches_aup(line: str) -> bool:
     try:
         rec = json.loads(line)
@@ -310,7 +347,7 @@ def _handle_sigusr1(_signum, _frame) -> None:
     _emit("SIGUSR1 received — will fire /clear + scrub on next tick")
 
 
-def fire_clear(reason: str) -> bool:
+def fire_clear(reason: str, warn: bool = True) -> bool:
     pane = resolve_claude_pane()
     now = time.time()
     if pane is None:
@@ -338,9 +375,11 @@ def fire_clear(reason: str) -> bool:
         )
     _resolve_state["fail_since"] = 0.0
     _resolve_state["alerted"] = False
-    log(f"{reason} → pre-clear warning into {pane}, sleeping {PRE_CLEAR_WARN_SEC}s")
-    inject_pre_clear_warning(pane)
-    time.sleep(PRE_CLEAR_WARN_SEC)
+    # A refusal-latched session can't answer the warning — it's 15s of nothing.
+    if warn:
+        log(f"{reason} → pre-clear warning into {pane}, sleeping {PRE_CLEAR_WARN_SEC}s")
+        inject_pre_clear_warning(pane)
+        time.sleep(PRE_CLEAR_WARN_SEC)
     log(f"{reason} → injecting /clear into {pane}")
     if not inject_clear(pane):
         return False
@@ -409,6 +448,16 @@ def main() -> int:
                         continue
                     if line_is_assistant_turn(line):
                         turns_since_clear += 1
+                    refusal = line_matches_refusal(line)
+                    if refusal:
+                        if now - last_fire < DEBOUNCE_SEC:
+                            log(f"refusal {refusal} (debounced, skipping)")
+                            break
+                        if fire_clear(f"REFUSAL {refusal}", warn=False):
+                            last_fire = now
+                            turns_since_clear = 0
+                            fired_this_tick = True
+                        break
                     if line_matches_aup(line):
                         if now - last_fire < DEBOUNCE_SEC:
                             log("AUP match (debounced, skipping)")
