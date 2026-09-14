@@ -376,6 +376,8 @@ def split_say(target, text, origin=None):
 # default) si torna alla porta effimera, buona solo dove non c'e' firewall.
 DCC_DIR = _cfg("BOT_DCC_DIR", os.path.join(HERE, "dcc"))
 DCC_TIMEOUT = int(_cfg("BOT_DCC_TIMEOUT", "180"))
+# Quanto aspettiamo che il peer chiuda dopo l'ultimo byte, prima di mollare.
+DCC_DRAIN_TIMEOUT = int(_cfg("BOT_DCC_DRAIN_TIMEOUT", "60"))
 DCC_PORT_MIN = int(_cfg("BOT_DCC_PORT_MIN", "0"))
 DCC_PORT_MAX = int(_cfg("BOT_DCC_PORT_MAX", "0"))
 DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
@@ -405,6 +407,35 @@ def _dcc_bind(srv):
     raise OSError(f"no free port in {DCC_PORT_MIN}-{DCC_PORT_MAX}")
 
 
+def _dcc_drain(conn):
+    """Half-close, read the peer's ACK stream to EOF, return the last ACK.
+
+    Un ricevente DCC risponde a ogni blocco con un ACK di 4 byte big-endian, il
+    totale ricevuto finora. Quegli ACK si accumulano nel nostro buffer di
+    ricezione, e chiudere un socket con dati non letti fa emettere al kernel un
+    RST invece del FIN: il peer perde tutto quello che era ancora in volo e si
+    ritrova un file mozzato mentre noi abbiamo gia' loggato DCC_DONE (vjt su
+    #sbiffo il 2026-09-14: "il transfer non completa" — misurato, 131072 byte su
+    246254 con un client lento). Mezza chiusura, si drena, e il close finale e'
+    un FIN pulito. L'ultimo ACK e' anche l'unica prova di consegna che abbiamo.
+    """
+    last = None
+    try:
+        conn.shutdown(socket.SHUT_WR)
+        conn.settimeout(DCC_DRAIN_TIMEOUT)
+        tail = b""
+        while True:
+            more = conn.recv(65536)
+            if not more:
+                break
+            tail = (tail + more)[-4:]
+        if len(tail) == 4:
+            last = int.from_bytes(tail, "big")
+    except OSError:
+        pass
+    return last
+
+
 def _dcc_serve(srv, path, nick, name):
     """Accept one peer, push the file, hang up. Runs off the reader thread."""
     try:
@@ -428,7 +459,9 @@ def _dcc_serve(srv, path, nick, name):
     except Exception as e:
         emit("DCC_ERROR", f"TO={nick}", f"FILE={name}", f"SENT={sent}", repr(e))
     else:
-        emit("DCC_DONE", f"TO={nick}", f"FILE={name}", f"BYTES={sent}")
+        ack = _dcc_drain(conn)
+        emit("DCC_DONE", f"TO={nick}", f"FILE={name}", f"BYTES={sent}",
+             f"ACK={ack if ack is not None else 'none'}")
     finally:
         conn.close()
 
