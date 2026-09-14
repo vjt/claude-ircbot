@@ -11,8 +11,9 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     NOTICE <target> <text>
     RAW <irc line>          -> send as-is
     JOIN <chan> / PART <chan> / WHOIS <nick> / QUIT [reason]
-    DCC <nick> <file> [name] -> offer $BOT_DCC_DIR/<file> over DCC SEND (IPv6),
-                               announcing [name] to the peer if given (else <file>)
+    DCC <nick> <file> [name] -> offer $BOT_DCC_DIR/<file> over DCC SEND (v4 if
+                               BOT_DCC_BIND4 is set, else IPv6), announcing
+                               [name] to the peer if given (else <file>)
 
   Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
   The tag changes NOTHING on the wire — it is only stamped into bot.log,
@@ -364,11 +365,17 @@ def split_say(target, text, origin=None):
 # prova a scaricarli. Un listener effimero sull'indirizzo da cui usciamo, il
 # CTCP con la porta, UNA connessione servita e chiuso.
 #
-# Solo IPv6, ordine di vjt (#sbiffo 2026-09-12 01:29, "va bene facciamolo solo
-# ipv6"): la jail di Convento non ha un indirizzo v4, e comunque il DCC storico
-# vuole l'IP v4 come intero decimale a 32 bit, dove un v6 non ci sta. Sul campo
-# irssi, HexChat e mIRC 7 leggono l'indirizzo v6 letterale in quel campo, quindi
-# e' quello che mandiamo. Chi sta su v4 puro non prende niente: e' il prezzo.
+# Nasce solo IPv6 (ordine di vjt #sbiffo 2026-09-12 01:29, "va bene facciamolo
+# solo ipv6"), e sul campo si e' visto il prezzo: il DCC storico vuole l'IP come
+# intero decimale a 32 bit, e un client che il v6 in quel campo non lo digerisce
+# — HexChat, misurato con peluche il 14/09 — legge la stringa come numero e ne
+# cava 0.0.0.2, cioe' "No route to host". irssi e mIRC 7 invece il letterale v6
+# lo leggono, quindi il ramo v6 resta e non si tocca.
+#
+# BOT_DCC_BIND4 accende il ramo v4 e ha la precedenza: si ascolta li' (nella
+# jail e' un privato di <jail_v4>) e si annuncia BOT_DCC_ADDR4, il pubblico
+# davanti alla rdr di pf, come intero a 32 bit. Ordine di vjt 2026-09-14 23:28
+# ("VA BENE IPV4", poi "ipv4 e basta"): cosi' prendono anche i client v4-only.
 #
 # La porta non puo' essere effimera: dietro un firewall la finestra va aperta
 # in anticipo, e non si apre quello che sceglie il kernel. BOT_DCC_PORT_MIN /
@@ -380,6 +387,10 @@ DCC_TIMEOUT = int(_cfg("BOT_DCC_TIMEOUT", "180"))
 DCC_DRAIN_TIMEOUT = int(_cfg("BOT_DCC_DRAIN_TIMEOUT", "60"))
 DCC_PORT_MIN = int(_cfg("BOT_DCC_PORT_MIN", "0"))
 DCC_PORT_MAX = int(_cfg("BOT_DCC_PORT_MAX", "0"))
+# Ramo v4: indirizzo su cui ascoltare, e indirizzo da annunciare (uguale al
+# primo se non c'e' NAT davanti). Vuoto = si resta sul v6 di IRC_BIND.
+DCC_BIND4 = _cfg("BOT_DCC_BIND4", "")
+DCC_ADDR4 = _cfg("BOT_DCC_ADDR4", "") or DCC_BIND4
 DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
 # The offer name is what the peer's client shows and never touches the disk,
 # so it needs no traversal guard — only CTCP safety (no spaces, the field
@@ -387,7 +398,7 @@ DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
 DCC_OFFER_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,120}\Z")
 
 
-def _dcc_bind(srv):
+def _dcc_bind(srv, addr):
     """Bind the listener inside the configured range, or ephemeral if unset.
 
     Every offer holds its port for the whole transfer, so with N offers in
@@ -395,12 +406,12 @@ def _dcc_bind(srv):
     binds. Range exhausted -> the caller refuses the offer.
     """
     if DCC_PORT_MIN <= 0 or DCC_PORT_MAX < DCC_PORT_MIN:
-        srv.bind((BIND, 0))
+        srv.bind((addr, 0))
         return
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     for port in range(DCC_PORT_MIN, DCC_PORT_MAX + 1):
         try:
-            srv.bind((BIND, port))
+            srv.bind((addr, port))
         except OSError:
             continue
         return
@@ -496,14 +507,25 @@ def dcc_send(nick, name, origin=None, offer=None):
     if not os.path.isfile(path):
         emit("CMD_ERROR", "dcc-no-file", path)
         return
-    if not BIND:
+    bind = DCC_BIND4 or BIND
+    if not bind:
         emit("CMD_ERROR", "dcc-no-bind", "IRC_BIND empty: no address, no offer")
         return
+    if DCC_BIND4:
+        # Il campo indirizzo del DCC e' un intero a 32 bit, non una stringa.
+        try:
+            advertise = str(int.from_bytes(socket.inet_aton(DCC_ADDR4), "big"))
+        except OSError as e:
+            emit("CMD_ERROR", "dcc-bad-addr4", repr(DCC_ADDR4), repr(e))
+            return
+    else:
+        advertise = BIND
     size = os.path.getsize(path)
-    srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    family = socket.AF_INET if DCC_BIND4 else socket.AF_INET6
+    srv = socket.socket(family, socket.SOCK_STREAM)
     try:
         srv.settimeout(DCC_TIMEOUT)
-        _dcc_bind(srv)
+        _dcc_bind(srv, bind)
         srv.listen(1)
     except Exception as e:
         srv.close()
@@ -513,9 +535,10 @@ def dcc_send(nick, name, origin=None, offer=None):
     threading.Thread(
         target=_dcc_serve, args=(srv, path, nick, offer), daemon=True
     ).start()
-    send_raw(f"PRIVMSG {nick} :\x01DCC SEND {offer} {BIND} {port} {size}\x01", origin)
+    send_raw(f"PRIVMSG {nick} :\x01DCC SEND {offer} {advertise} {port} {size}\x01",
+             origin)
     emit("DCC_OFFER", f"TO={nick}", f"FILE={name}", f"OFFER={offer}",
-         f"PORT={port}", f"SIZE={size}")
+         f"ADDR={advertise}", f"PORT={port}", f"SIZE={size}")
 
 
 def run_startup():
