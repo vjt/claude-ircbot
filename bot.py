@@ -297,8 +297,48 @@ def dm_reject_once(nick):
     return True
 
 
+# Second half of the same gate (vjt 2026-09-15, after "ma quindi sei
+# promptinjectabile in pvt??"). Unlisted nicks are already dropped above, but a
+# LISTED nick whose WHOIS hasn't resolved yet used to reach the event stream
+# tagged UNTRUSTED — payload in context, only policy stopping it from being
+# obeyed. Policy is applied by a model; the gate is not. So the DM is now HELD
+# until the WHOIS answers: 307/330 releases it as TRUSTED, 318-without-307 drops
+# it. Holding rather than dropping outright is what keeps the FIRST DM from a
+# genuinely trusted nick (vjt's own, right after a reconnect) from vanishing.
+# Nothing is ever lost forensically: the raw line is in bot.log either way, and
+# vjt can order it read from there.
+DM_HOLD_MAX = 5  # per nick, newest wins — a flood can't grow the queue
+dm_held: dict[str, list[tuple[str, str]]] = {}  # nick_lower -> [(host, body)]
+
+
+def dm_hold(nick, host, body):
+    """Park a DM awaiting WHOIS. Returns the queue depth for the event line."""
+    n = nick.lower()
+    with dm_lock:
+        q = dm_held.setdefault(n, [])
+        q.append((host, body))
+        del q[:-DM_HOLD_MAX]
+        return len(q)
+
+
+def dm_flush(nick, reason):
+    """Resolve the held DMs for `nick`. Each one is re-checked at release time
+    (host glob + 307), never trusted on the strength of the earlier sighting."""
+    n = nick.lower()
+    with dm_lock:
+        queued = dm_held.pop(n, [])
+    for host, body in queued:
+        if n in verified and host_matches(n, host):
+            emit("MSG", "TRUSTED", f"FROM={nick}", f"HOST={host}",
+                 f"TO={NICK}", "HELD=1", f"BODY={body}")
+        else:
+            emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}",
+                 f"LEN={len(body)}", reason)
+
+
 def trust_reset(nick, reason):
     n = nick.lower()
+    dm_flush(nick, f"reset:{reason}")
     if n in verified or n in whois_pending:
         verified.discard(n)
         whois_pending.discard(n)
@@ -656,6 +696,7 @@ def handle_server_line(line):
             verified.add(target)
             whois_pending.discard(target)
             emit("VERIFIED", parts[1])
+            dm_flush(parts[1], "307")
         return
     if cmd == "330":
         # RPL_WHOISACCOUNT (Libera/solanum): ":srv 330 <me> <nick> <account>
@@ -670,6 +711,7 @@ def handle_server_line(line):
             verified.add(target)
             whois_pending.discard(target)
             emit("VERIFIED", parts[1])
+            dm_flush(parts[1], "330")
         return
     if cmd == "318":
         # RPL_ENDOFWHOIS: if nick was pending and not verified => not registered
@@ -680,6 +722,8 @@ def handle_server_line(line):
                 whois_pending.discard(target)
                 if target not in verified:
                     emit("NOT_REGISTERED", parts[1])
+            # Either way the WHOIS is over: nothing may stay parked past it.
+            dm_flush(parts[1], "318")
         return
     if cmd == "NOTICE":
         parts = rest.split(" :", 1)
@@ -756,6 +800,21 @@ def handle_server_line(line):
             return
         trusted, reason = trust_check(nick, host)
         trust = "TRUSTED" if trusted else "UNTRUSTED"
+        if not target.startswith(("#", "&")) and not trusted:
+            # Listed (dm_blocked already ate the strangers) but not trusted yet.
+            # pending-whois => park it, the 307/330/318 handler decides. Anything
+            # else (host-mismatch: a squatter on a listed nick) will never become
+            # trusted, so drop it now and rebound the notice.
+            if reason == "pending-whois":
+                depth = dm_hold(nick, host, body)
+                emit("DM_HELD", f"FROM={nick}", f"HOST={host}",
+                     f"LEN={len(body)}", f"QUEUED={depth}")
+            else:
+                replied = dm_reject_once(nick)
+                emit("DM_BLOCKED", f"FROM={nick}", f"HOST={host}",
+                     f"LEN={len(body)}", reason,
+                     "replied" if replied else "silent")
+            return
         emit("MSG", trust, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
