@@ -39,6 +39,8 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from leak_guard import LeakGuard
+
 # Network + file paths are env-overridable so a SECOND instance (e.g. Libera.
 # Chat) runs the SAME code with its own nick / FIFO / logs / trust / startup.
 # Every default reproduces the original Azzurra single-instance behaviour, so
@@ -81,6 +83,9 @@ FIFO = _cfg("BOT_FIFO", os.path.join(HERE, "bot.send"))
 TRUST_FILE = _cfg("BOT_TRUST", os.path.join(HERE, "bot.trust"))
 ENV_FILE = _cfg("BOT_ENV", os.path.join(HERE, ".env"))
 STARTUP_FILE = _cfg("BOT_STARTUP", os.path.join(HERE, "bot.startup"))
+# Shared by ALL instances on purpose (not per-network): see leak_guard.py.
+RESERVED_FILE = _cfg("BOT_RESERVED", os.path.join(HERE, "bot.reserved"))
+RESERVED_STORE = _cfg("BOT_RESERVED_STORE", os.path.join(HERE, "reserved_recent.tsv"))
 
 # Wall-clock timestamps in Europe/Rome (CET/CEST, DST-aware) instead of the
 # host's UTC. bot.log + the event stream were UTC until 2026-07-02, when vjt
@@ -134,6 +139,7 @@ MAX_BODY = 400
 
 sock = None
 send_lock = threading.Lock()
+leak_guard = LeakGuard(HOST, RESERVED_FILE, RESERVED_STORE)
 
 # Idle-tick config: per-channel random cooldown (seconds) after the last
 # HUMAN PRIVMSG. When elapsed, bot emits `IDLE <chan>` exactly once, then
@@ -642,6 +648,9 @@ def handle_server_line(line):
     # vjt's trust host *.openssl.it (vjt 2026-07-02).
     host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
     rest = rest or ""
+    if cmd in ("PRIVMSG", "NOTICE", "TOPIC") and " :" in rest:
+        tgt, _, body = rest.partition(" :")
+        leak_guard.record(tgt.strip(), body)
 
     if cmd == "001":
         registered = True
@@ -915,6 +924,31 @@ def writer_loop():
                     emit("CMD_ERROR", "cmd-fail", repr(e), line[:80])
 
 
+def outbound_ok(verb, rest, origin):
+    """Leak gate for every chat line the FIFO asks for (leak_guard.py).
+
+    RAW is parsed too, or `RAW PRIVMSG #x :...` would be the way around it.
+    A line to a reserved channel of ours is recorded here, since our own
+    words there are just as reserved as anyone else's.
+    """
+    if verb == "RAW":
+        m = re.match(r"(?i)(PRIVMSG|NOTICE|TOPIC)\s+(\S+)\s+:(.*)", rest)
+        if not m:
+            return True
+        target, text = m.group(2), m.group(3)
+    elif verb in ("SAY", "ACT", "NOTICE") and " " in rest:
+        target, text = rest.split(" ", 1)
+    else:
+        return True
+    reason = leak_guard.check(target, text, dm_ok=is_trust_listed(target))
+    if reason:
+        log("!", f"LEAK_BLOCKED {verb} {target} {reason}", origin)
+        emit("LEAK_BLOCKED", verb, f"TO={target}", reason, f"LEN={len(text)}")
+        return False
+    leak_guard.record(target, text)
+    return True
+
+
 def process_cmd(line):
     if " " in line:
         verb, rest = line.split(" ", 1)
@@ -929,6 +963,8 @@ def process_cmd(line):
                  "allowed: [a-z0-9_-]{1,24}")
             return
     verb = verb.upper()
+    if not outbound_ok(verb, rest, origin):
+        return
     if verb == "SAY":
         if " " not in rest:
             emit("CMD_ERROR", "SAY needs <target> <text>", repr(rest))

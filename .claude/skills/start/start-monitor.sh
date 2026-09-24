@@ -38,5 +38,5 @@
 # in tools/chan_filter.awk, condivise con tools/sweep-bot-log.sh — la sweep di
 # /resume leggeva bot.log grezzo e si rivedeva #sniffo per intero a ogni /clear.
 stdbuf -oL tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.stdout.log | \
-  grep --line-buffered -E '^(\[[0-9]{2}:[0-9]{2}\] )?(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR|CMD_ERROR) ' | \
+  grep --line-buffered -E '^(\[[0-9]{2}:[0-9]{2}\] )?(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR|CMD_ERROR|LEAK_BLOCKED) ' | \
   awk -f /home/vjt/code/IRC/vjt-claude/tools/chan_filter.awk

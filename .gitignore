@@ -88,3 +88,7 @@ suore_state.json
 suore_*_state.json
 suore.log
 suore_*.log
+
+# Leak guard store: recent lines of the reserved channels (confidential)
+reserved_recent.tsv
+reserved_recent.tsv.tmp
