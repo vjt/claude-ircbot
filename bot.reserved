@@ -1,0 +1,5 @@
+# Reserved channels: what is said there never leaves, and the name itself is
+# never written anywhere else. `<irc host> <#channel>`, one per line. Read by
+# leak_guard.py in every bot instance, so a name here is blocked on all three
+# networks. Whole-line comments only.
+irc.azzurra.chat #it-opers
