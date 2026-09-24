@@ -940,6 +940,10 @@ def outbound_ok(verb, rest, origin):
         target, text = rest.split(" ", 1)
     else:
         return True
+    # Services commands name the reserved channel by design (bot.startup's
+    # `ChanServ :INVITE #it-opers` got eaten on the first restart, 2026-09-24).
+    if target.lower() in ("chanserv", "nickserv"):
+        return True
     reason = leak_guard.check(target, text, dm_ok=is_trust_listed(target))
     if reason:
         log("!", f"LEAK_BLOCKED {verb} {target} {reason}", origin)
