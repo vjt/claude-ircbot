@@ -28,9 +28,16 @@ CLI:
   firma_counter.py list       print current signatures (from public json)
   firma_counter.py backfill   (re)build state from bot.log history, no daemon
 
-Env overrides (used for staging/demo so a dry run can't publish):
+Env overrides (used for staging/demo so a dry run can't publish, and to run
+a second petition off the same code — Sonic, 2026-09-24):
   FIRMA_OUT    path of the public tsk.json   (default: synced static dir)
   FIRMA_STATE  path of the private state json (default: repo dir)
+  FIRMA_CMD    the command word, without `!`  (default: firma)
+  FIRMA_TITLE  title written into the public json
+  FIRMA_CHANS  space-separated petition channels
+  FIRMA_NOCOMMENT_CHANS  channels whose signings go public WITHOUT the
+               comment: a reserved channel's words never leave it, and a
+               public page is "altrove" too.
 """
 import json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -46,11 +53,15 @@ OUT_JSON = Path(os.environ.get("FIRMA_OUT", "/srv/www-static/t/sk/tsk.json"))
 
 # Channels that count as the petition floor. Started on #sniffo, moved to
 # #sbiffo ("repla di là"), then vjt enabled #it-opers too.
-PETITION_CHANS = {"#sniffo", "#sbiffo", "#it-opers"}
+PETITION_CHANS = set(os.environ.get("FIRMA_CHANS", "#sniffo #sbiffo #it-opers").lower().split())
+NOCOMMENT_CHANS = set(os.environ.get("FIRMA_NOCOMMENT_CHANS", "").lower().split())
+CMD = os.environ.get("FIRMA_CMD", "firma")
+TITLE = os.environ.get("FIRMA_TITLE", "Ridateci tsk su Azzurra")
 
 # Command: line must START with `!firma`, optional trailing comment. Starting
 # anchor keeps meta-chatter that merely mentions "!firma" from signing anyone.
-FIRMA_PAT = re.compile(r'^!firma(?:\s+(?P<comment>.*\S))?\s*$', re.IGNORECASE)
+FIRMA_PAT = re.compile(r'^!' + re.escape(CMD) + r'(?:\s+(?P<comment>.*\S))?\s*$',
+                       re.IGNORECASE)
 COMMENT_MAX = 200
 
 # Inbound-only (`< :`): captures nick!ident@host. We match the whole line
@@ -123,7 +134,7 @@ def save(data):
     ]
     # Counter = distinct heads, not signings.
     count = len({s["nick"].casefold() for s in sigs})
-    doc = {"title": "Ridateci tsk su Azzurra", "count": count,
+    doc = {"title": TITLE, "count": count,
            "signatures": public}
     _atomic_write(OUT_JSON, json.dumps(doc, indent=2, ensure_ascii=False))
 
@@ -133,7 +144,7 @@ def process(line, data, ts=None):
     if not m:
         return False
     nick, chan, text = m.group("nick"), m.group("chan"), m.group("text")
-    if chan not in PETITION_CHANS:
+    if chan.lower() not in PETITION_CHANS:
         return False
     bridged = False
     if nick in BRIDGE_NICKS:
@@ -146,6 +157,8 @@ def process(line, data, ts=None):
         return False
     comment = (fm.group("comment") or "").strip()
     comment = re.sub(r'[\x00-\x1f]', '', comment)[:COMMENT_MAX]
+    if chan.lower() in NOCOMMENT_CHANS:
+        comment = ""
     head = canon_nick(nick)
     ts_i = int(ts if ts is not None else time.time())
     # Bridged signings can arrive twice (both bridges mirror the same #sniffo

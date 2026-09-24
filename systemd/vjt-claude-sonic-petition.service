@@ -1,0 +1,25 @@
+[Unit]
+Description=vjt-claude "Ridateci Sonic" petition signature sidecar (!sonic)
+Documentation=https://github.com/vjt/claude-ircbot
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/IRC/vjt-claude
+# Same firma_counter.py as the tsk petition, re-pointed by env. Asked by
+# Hypnotize 2026-09-23, green light from vjt 2026-09-24 14:17. #it-opers
+# signs but its comments never reach the public page.
+Environment=FIRMA_CMD=sonic
+Environment="FIRMA_TITLE=Ridateci Sonic su IRC"
+Environment="FIRMA_CHANS=#sbiffo #it-opers"
+Environment=FIRMA_NOCOMMENT_CHANS=#it-opers
+Environment=FIRMA_OUT=/srv/www-static/t/sonic/sonic.json
+Environment=FIRMA_STATE=/home/vjt/code/IRC/vjt-claude/sonic_state.json
+ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/firma_counter.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/vjt/code/IRC/vjt-claude/sonic_petition.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
