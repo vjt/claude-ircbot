@@ -4,8 +4,14 @@ bot.send
 bot.startup
 bot.stdout.log
 
+# Trust lists are per-deployment (who YOU trust, on YOUR hosts): untracked.
+# Format and an example live in README. bot.trust.ircnet stays tracked: it is
+# empty by design and the reasoning in it is the point.
+bot.trust
+bot.trust.libera
+bot.trust.convento
+
 # Libera.Chat instance runtime (2nd bot: same code, own nick/FIFO/logs/env).
-# bot.trust.libera IS tracked (nick + public cloak, like bot.trust).
 .env.libera
 bot.send.libera
 bot.startup.libera
