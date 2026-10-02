@@ -160,6 +160,19 @@ kick_lock = threading.Lock()
 KICK_WINDOW = 60.0
 KICK_MAX = 3
 
+# Channel convergence (vjt 2026-10-02, after Convento sat banned out of
+# #cybernet for who knows how long: "metti un cazzo di loop che ogni x secondi
+# prova a far convergere i chan configurati e i chan joinati"). Configured =
+# the JOIN lines of bot.startup, re-read every tick so an edit takes effect
+# live. Joined = what the server echoed back for our own nick. Every missing
+# channel gets its startup lines replayed (ChanServ INVITE + JOIN). One
+# direction only: a channel joined by hand from the FIFO is never parted —
+# drop it from bot.startup and PART it if it must go.
+CONVERGE_SECS = float(_cfg("BOT_CONVERGE_SECS", "120"))
+joined: set[str] = set()
+joined_lock = threading.Lock()
+startup_done = False
+
 
 def _arm_idle(chan: str) -> None:
     key = chan.lower()
@@ -186,6 +199,45 @@ def idle_ticker_loop() -> None:
             emit("IDLE", chan)
             # also to bot.log so Monitor tails pick it up alongside IRC traffic
             log("*", f"IDLE {chan}")
+
+
+def _startup_lines():
+    try:
+        with open(STARTUP_FILE) as f:
+            lines = [raw.strip() for raw in f]
+    except FileNotFoundError:
+        return []
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+def _is_me(nick: str) -> bool:
+    return nick.lower() in (NICK.lower(), (tmp_nick or "").lower())
+
+
+def converge_loop() -> None:
+    last_missing: set[str] = set()
+    while True:
+        time.sleep(CONVERGE_SECS)
+        if not startup_done:
+            continue
+        lines = _startup_lines()
+        configured = {
+            line.split()[1].lower()
+            for line in lines
+            if line.split()[0].upper() == "JOIN" and len(line.split()) > 1
+        }
+        with joined_lock:
+            missing = configured - joined
+        if missing != last_missing:
+            # Only on change: a channel we're banned from must not emit an
+            # event every tick for days.
+            emit("CONVERGE", "missing=" + ",".join(sorted(missing)) if missing else "ok")
+            last_missing = missing
+        for chan in sorted(missing):
+            for line in lines:
+                if chan in (tok.lstrip(":").lower() for tok in line.split()[1:]):
+                    process_cmd(line)
+                    time.sleep(0.5)
 
 
 def emit(kind, *parts):
@@ -605,6 +657,8 @@ def run_startup():
         except Exception as e:
             emit("ERROR", "startup-fail", repr(e), line[:80])
         time.sleep(0.5)
+    global startup_done
+    startup_done = True
     emit("STARTUP_DONE", count)
 
 
@@ -763,6 +817,9 @@ def handle_server_line(line):
         kick_target = head[1] if len(head) > 1 else ""
         kick_reason = kick_parts[1] if len(kick_parts) > 1 else ""
         emit("KICK", nick, f"HOST={host}", kick_chan, kick_target, kick_reason)
+        if kick_chan and _is_me(kick_target):
+            with joined_lock:
+                joined.discard(kick_chan.lower())
         if kick_chan and kick_target.lower() == NICK.lower():
             # Auto-rejoin with kick-flood backoff. Repeated kicks in a short
             # window = a hostile op. Walk away rather than trigger Excess Flood.
@@ -834,9 +891,15 @@ def handle_server_line(line):
         return
     if cmd == "JOIN":
         emit("JOIN", nick, f"HOST={host}", rest.lstrip(":"))
+        if _is_me(nick) and rest:
+            with joined_lock:
+                joined.add(rest.split()[0].lstrip(":").lower())
         return
     if cmd == "PART":
         emit("PART", nick, f"HOST={host}", rest)
+        if _is_me(nick) and rest:
+            with joined_lock:
+                joined.discard(rest.split()[0].lstrip(":").lower())
         trust_reset(nick, "part")
         return
     if cmd == "QUIT":
@@ -1039,6 +1102,7 @@ def main():
 
     threading.Thread(target=writer_loop, daemon=True).start()
     threading.Thread(target=idle_ticker_loop, daemon=True).start()
+    threading.Thread(target=converge_loop, daemon=True).start()
     reader_loop()
 
 
