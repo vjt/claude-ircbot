@@ -1,1 +1,1 @@
-/home/vjt/code/.voice/skill/SKILL.md
+/home/vjt/code/pavarotti/skill/SKILL.md
