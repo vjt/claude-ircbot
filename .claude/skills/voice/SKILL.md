@@ -1,0 +1,1 @@
+/home/vjt/code/.voice/skill/SKILL.md
