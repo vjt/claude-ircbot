@@ -31,7 +31,8 @@ class Harness:
         self.listed = {"vjt", "lucy"}
         self.trust = {"vjt": (True, "ok"), "lucy": (True, "ok")}
         self.to_vjt = []
-        self.urgent = set()     # msgids the bridge handed to the pacer as urgent
+        self.urgent = {}        # msgid -> seconds: what the bridge handed to the pacer as urgent
+        self.room = True        # the pacer's room() for text
         self.bot = self._engine(BOT)
         self.vjt = self._engine("vjt", pins={BOT: self.bot.fingerprint})
         self.pins_path = os.path.join(self.dir, "e2e.pins")
@@ -40,7 +41,7 @@ class Harness:
         self.bot.set_pins(self.pins.load())
         self.bridge = e2e_bridge.Bridge(
             self.bot, own_nick=BOT, pins=self.pins, submit=self.submit,
-            emit=self.emit,
+            room=lambda nick: self.room, emit=self.emit,
             log=lambda d, line, origin=None: self.logs.append(f"{d} {line}"),
             trust_check=lambda n, h: self.trust.get(n.lower(), (False, "not-listed")),
             is_listed=lambda n: n.lower() in self.listed,
@@ -228,6 +229,30 @@ class BridgeTest(unittest.TestCase):
         (msgid,) = refused
         self.assertNotIn(msgid, self.h.bot._sent)           # no NACK can come for it
 
+    def test_a_reply_the_pacer_has_no_room_for_is_reported_and_never_encrypted(self):
+        # A refused message was encrypted all the same, and the receiver would
+        # skip its key: ask first (irc-olm Pacer.room), and say so if not.
+        self.h.say("ciao")
+        self.h.room = False
+        sent_before = dict(self.h.bot._sent)
+        self.h.bridge.send_text("vjt", "x", action=False, origin=None)
+        self.assertIn("E2E_SEND_FAILED TO=vjt REASON=pacer-full LOST=1", self.h.events)
+        self.assertEqual(self.h.to_vjt, [])
+        self.assertEqual(self.h.bot._sent, sent_before)
+
+    def test_a_refused_challenge_is_not_reported_as_a_lost_reply(self):
+        # Its order ends when the challenge expires, like any unanswered one.
+        self.h.say("ciao")
+
+        def full(outbound, urgent):
+            return list(dict.fromkeys((t, framing.parse(b).msgid) for t, b in outbound))
+        self.h.bridge._submit = full
+        self.assertEqual(self.h.gate(f"{BOT}: riavvia"), "held")
+        self.assertFalse(any(e.startswith("E2E_SEND_FAILED") for e in self.h.events))
+        self.h.clock.t += 16
+        self.h.bridge.tick()
+        self.assertTrue(any(e.startswith("MSG UNTRUSTED WHY=no-ack") for e in self.h.events))
+
     # --- orders: users with a pinned key ---------------------------------------------
 
     def test_a_user_without_a_pinned_key_keeps_layer_one(self):
@@ -258,11 +283,12 @@ class BridgeTest(unittest.TestCase):
         self.h.gate(f"{BOT}: riavvia il watchdog")
         self.h.pump()
         chal = sent({"PKMSG", "MSG"})
-        self.assertTrue(chal and chal <= self.h.urgent)      # it must beat 15 s
-        self.assertTrue(sent({"KEYREQ"}) <= self.h.urgent)
+        self.assertTrue(chal and chal <= self.h.urgent.keys())   # it must beat 15 s
+        self.assertTrue(all(14 < self.h.urgent[m] <= 15 for m in chal))   # and dies after
+        self.assertTrue(sent({"KEYREQ"}) <= self.h.urgent.keys())
         self.h.bridge.send_text("vjt", "a reply", action=False, origin=None)
         self.h.pump()
-        self.assertFalse((sent({"PKMSG", "MSG"}) - chal) & self.h.urgent)
+        self.assertFalse((sent({"PKMSG", "MSG"}) - chal) & self.h.urgent.keys())
 
     def test_held_channel_line_without_ack_is_released_untrusted(self):
         self.h.gate(f"{BOT}: rm -rf")

@@ -117,12 +117,13 @@ class PinsFile:
 
 
 class Bridge:
-    def __init__(self, engine, *, own_nick, pins, submit, emit, log, trust_check, is_listed,
-                 hold_dm, clock=time.monotonic):
+    def __init__(self, engine, *, own_nick, pins, submit, room, emit, log, trust_check,
+                 is_listed, hold_dm, clock=time.monotonic):
         self.engine = engine
         self.own_nick = own_nick
         self._pins = pins                # PinsFile
-        self._submit = submit            # (outbound pairs, urgent msgids) -> refused (nick, msgid), paced
+        self._submit = submit            # (outbound pairs, urgent msgid -> ttl) -> refused (nick, msgid), paced
+        self._room = room                # nick -> whether the pacer can take a text message
         self._emit = emit
         self._log = log                  # (direction, line, origin)
         self._trust_check = trust_check
@@ -224,6 +225,11 @@ class Bridge:
         with self._lock:
             self._log(">", f"E2E {'ACT' if action else 'MSG'} to {nick} ({len(text.encode())} bytes)",
                       origin)
+            if not self._room(nick):
+                # Asked first: a message the pacer refuses was encrypted all
+                # the same, and the receiver would skip its key.
+                self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
+                return
             self.dispatch(self.engine.send(nick, {"t": "action" if action else "text",
                                                   "body": text}))
 
@@ -242,9 +248,11 @@ class Bridge:
     def dispatch(self, result) -> None:
         refused = self._submit(result.outbound, result.urgent) if result.outbound else []
         # Never left: no NACK can come for them, and each is a message lost.
-        self.engine.discard([msgid for _, msgid in refused if msgid is not None])
-        for nick, _ in refused:
-            self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
+        # A refused challenge is not: its order ends as an unanswered one.
+        self.engine.discard([msgid for _, msgid in refused])
+        for nick, msgid in refused:
+            if msgid not in result.urgent:
+                self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
         for e in result.events:
             self._on_event(e)
 
