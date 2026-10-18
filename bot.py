@@ -14,6 +14,10 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     DCC <nick> <file> [name] -> offer $BOT_DCC_DIR/<file> over DCC SEND (v4 if
                                BOT_DCC_BIND4 is set, else IPv6), announcing
                                [name] to the peer if given (else <file>)
+    ESAY <nick> <text>      -> end-to-end encrypted query message to a nick
+    EACT <nick> <text>         whose key is pinned (needs BOT_E2E_KEY, see
+                               e2e_bridge.py; never to a channel). SAY/ACT to
+                               a nick whose last DM was encrypted encrypt too.
 
   Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
   The tag changes NOTHING on the wire — it is only stamped into bot.log,
@@ -87,6 +91,23 @@ STARTUP_FILE = _cfg("BOT_STARTUP", os.path.join(HERE, "bot.startup"))
 # Shared by ALL instances on purpose (not per-network): see leak_guard.py.
 RESERVED_FILE = _cfg("BOT_RESERVED", os.path.join(HERE, "bot.reserved"))
 RESERVED_STORE = _cfg("BOT_RESERVED_STORE", os.path.join(HERE, "reserved_recent.tsv"))
+
+# End-to-end encrypted queries and order challenges (issue #4, e2e_bridge.py).
+# OFF unless BOT_E2E_KEY names a key file (`python -m irc_olm keygen PATH`, kept
+# outside the repo). Only then does the bot import irc-olm, its one non-stdlib
+# dependency, so an instance without E2E stays stdlib-only and unchanged.
+# One identity per network: each instance has its own key, state and network id.
+# The network id binds the state file, so it must never change for an instance
+# (the server name can: IRCnet's already did).
+# The pins file (BOT_E2E_PINS) holds the only keys the bot talks E2E with, and
+# the bot only ever READS it: the operator makes it root-owned, or denies it to
+# the bot's Claude session (see README). Required once E2E is on.
+E2E_KEY = _cfg("BOT_E2E_KEY", "")
+E2E_STATE = _cfg("BOT_E2E_STATE", os.path.join(HERE, "bot.e2e.state.json"))
+E2E_NETWORK = _cfg("BOT_E2E_NETWORK", "")
+E2E_PINS = _cfg("BOT_E2E_PINS", "")
+E2E_VERBS = ("ESAY", "EACT")
+bridge = None  # e2e_bridge.Bridge when E2E is on
 
 # Wall-clock timestamps in Europe/Rome (CET/CEST, DST-aware) instead of the
 # host's UTC. bot.log + the event stream were UTC until 2026-07-02, when vjt
@@ -391,15 +412,16 @@ def dm_reject_once(nick):
 # Nothing is ever lost forensically: the raw line is in bot.log either way, and
 # vjt can order it read from there.
 DM_HOLD_MAX = 5  # per nick, newest wins — a flood can't grow the queue
-dm_held: dict[str, list[tuple[str, str]]] = {}  # nick_lower -> [(host, body)]
+dm_held: dict[str, list[tuple[str, str, tuple]]] = {}  # nick_lower -> [(host, body, extra)]
 
 
-def dm_hold(nick, host, body):
-    """Park a DM awaiting WHOIS. Returns the queue depth for the event line."""
+def dm_hold(nick, host, body, extra=()):
+    """Park a DM awaiting WHOIS. Returns the queue depth for the event line.
+    `extra` are fields for the MSG event (ENCRYPTED=1 ... from e2e_bridge)."""
     n = nick.lower()
     with dm_lock:
         q = dm_held.setdefault(n, [])
-        q.append((host, body))
+        q.append((host, body, tuple(extra)))
         del q[:-DM_HOLD_MAX]
         return len(q)
 
@@ -410,9 +432,9 @@ def dm_flush(nick, reason):
     n = nick.lower()
     with dm_lock:
         queued = dm_held.pop(n, [])
-    for host, body in queued:
+    for host, body, extra in queued:
         if n in verified and host_matches(n, host):
-            emit("MSG", "TRUSTED", f"FROM={nick}", f"HOST={host}",
+            emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                  f"TO={NICK}", "HELD=1", f"BODY={body}")
         else:
             emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}",
@@ -816,6 +838,13 @@ def handle_server_line(line):
         else:
             fire_startup("no-nickserv-pass")
         return
+    if cmd == "005":
+        # RPL_ISUPPORT: ":srv 005 <me> TOK TOK ... :are supported". The CHAL
+        # names the network by its NETWORK token; LINELEN, where a server
+        # advertises it, widens the E2E chunk budget.
+        if bridge:
+            bridge.on_isupport(rest.split(" :", 1)[0].split()[1:])
+        return
     if cmd in ("433", "432", "437"):
         emit("NICK_ERROR", cmd, rest)
         if not registered:
@@ -933,6 +962,10 @@ def handle_server_line(line):
         parts = rest.split(" :", 1)
         target = parts[0].strip()
         body = parts[1] if len(parts) > 1 else ""
+        if bridge and bridge.is_e2e(body):
+            # Ciphertext: never the CTCP event, never a plaintext path.
+            bridge.on_e2e_line(nick, host, target, body)
+            return
         if body.startswith("\x01") and body.endswith("\x01"):
             ctcp = body.strip("\x01")
             emit("CTCP", f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={ctcp}")
@@ -975,7 +1008,19 @@ def handle_server_line(line):
                      f"LEN={len(body)}", reason,
                      "replied" if replied else "silent")
             return
-        emit("MSG", trust, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
+        extra = []
+        if bridge:
+            verdict = bridge.gate_plaintext(nick, host, prefix, target, body, trusted)
+            if verdict == "held":
+                # Waiting for the ACK of a CHAL: e2e_bridge emits it later.
+                if target.startswith("#") and nick.lower() != NICK.lower():
+                    _arm_idle(target)
+                return
+            if verdict == "unchallenged":
+                # This user has a verified key: plain text alone no longer
+                # counts (no downgrade), and this line was not challenged.
+                trust, extra = "UNTRUSTED", ["WHY=unchallenged"]
+        emit("MSG", trust, *extra, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
         if trusted and body.strip().lower() in USAGE_CMDS:
@@ -987,6 +1032,9 @@ def handle_server_line(line):
             _arm_idle(target)
         return
     if cmd == "JOIN":
+        if bridge and nick.lower() == NICK.lower():
+            # Our own full mask, as receivers see it: sizes the E2E chunks.
+            bridge.on_own_mask(prefix)
         emit("JOIN", nick, f"HOST={host}", rest.lstrip(":"))
         if _is_me(nick) and rest:
             with joined_lock:
@@ -1005,6 +1053,10 @@ def handle_server_line(line):
         return
     if cmd == "NICK":
         new_nick = rest.lstrip(":")
+        if bridge and nick.lower() in (NICK.lower(), (tmp_nick or "").lower()):
+            # Ours: the receivers now see another mask, and the E2E chunk
+            # budget is sized for it.
+            bridge.on_own_nick(new_nick)
         emit("NICK_CHANGE", nick, f"HOST={host}", new_nick)
         trust_reset(nick, "nick-change")
         if ghost_needed and new_nick.lower() == NICK.lower():
@@ -1076,12 +1128,30 @@ def writer_loop():
         with open(FIFO, "r") as f:
             for line in f:
                 line = line.rstrip("\r\n")
-                if not line:
-                    continue
-                try:
-                    process_cmd(line)
-                except Exception as e:
-                    emit("CMD_ERROR", "cmd-fail", repr(e), line[:80])
+                if line:
+                    run_cmd(line)
+
+
+def _redacted(line):
+    """`line` as the event stream may show it. A command bound for an E2E
+    query keeps its verb and target, never its text: encrypting it would be
+    pointless if a failure echoed it in clear to bot.stdout.log."""
+    verb, _, rest = line.partition(" ")
+    target, _, text = rest.partition(" ")
+    base = verb.partition(":")[0].upper()
+    encrypted = base in E2E_VERBS or (
+        base in ("SAY", "ACT") and bridge is not None
+        and not target.startswith(("#", "&")) and bridge.wants_encryption(target))
+    return f"{verb} {target} [{len(text.encode())} bytes]" if encrypted else line
+
+
+def run_cmd(line):
+    try:
+        process_cmd(line)
+    except Exception as e:
+        shown = _redacted(line)
+        # The exception text can quote the line too: only its type then.
+        emit("CMD_ERROR", "cmd-fail", repr(e) if shown == line else type(e).__name__, shown[:80])
 
 
 def outbound_ok(verb, rest, origin):
@@ -1096,7 +1166,7 @@ def outbound_ok(verb, rest, origin):
         if not m:
             return True
         target, text = m.group(2), m.group(3)
-    elif verb in ("SAY", "ACT", "NOTICE") and " " in rest:
+    elif verb in ("SAY", "ACT", "NOTICE", *E2E_VERBS) and " " in rest:
         target, text = rest.split(" ", 1)
     else:
         return True
@@ -1129,7 +1199,24 @@ def process_cmd(line):
     verb = verb.upper()
     if not outbound_ok(verb, rest, origin):
         return
-    if verb == "SAY":
+    if verb in ("SAY", "ACT") and bridge and " " in rest:
+        target, text = rest.split(" ", 1)
+        if not target.startswith(("#", "&")) and bridge.wants_encryption(target):
+            # The conversation is encrypted: so is the reply (e2e_bridge).
+            bridge.send_text(target, text, action=verb == "ACT", origin=origin)
+            return
+    if verb in E2E_VERBS:
+        # Never echo the text in a CMD_ERROR: it was meant to be encrypted.
+        target = rest.split(" ", 1)[0]
+        if " " not in rest:
+            emit("CMD_ERROR", f"{verb} needs <nick> <text>")
+        elif target.startswith(("#", "&")):
+            emit("CMD_ERROR", "e2e-channel", verb, f"TO={target}", "E2E is for queries only")
+        elif bridge is None:
+            emit("CMD_ERROR", "e2e-off", verb, f"TO={target}", "BOT_E2E_KEY is not set")
+        else:
+            bridge.send_text(target, rest.split(" ", 1)[1], action=verb == "EACT", origin=origin)
+    elif verb == "SAY":
         if " " not in rest:
             emit("CMD_ERROR", "SAY needs <target> <text>", repr(rest))
             return
@@ -1167,13 +1254,48 @@ def process_cmd(line):
         dcc_send(nick, name, origin, offer)
     else:
         emit("CMD_ERROR", "unknown-verb", repr(verb),
-             "valid: SAY ACT NOTICE JOIN PART WHOIS QUIT RAW DCC")
+             "valid: SAY ACT ESAY EACT NOTICE JOIN PART WHOIS QUIT RAW DCC")
+
+
+def _start_e2e():
+    """Build the E2E bridge when BOT_E2E_KEY is set. Without it the bot stays
+    stdlib-only and unchanged: irc-olm is imported here and nowhere else."""
+    global bridge
+    if not E2E_KEY:
+        return
+    if not E2E_NETWORK or not E2E_PINS:
+        raise ValueError("BOT_E2E_KEY is set: BOT_E2E_NETWORK and BOT_E2E_PINS are required too")
+    import e2e_bridge
+    from irc_olm import store
+    from irc_olm.engine import Engine
+    from irc_olm.pacing import PacedSender
+
+    pins = e2e_bridge.PinsFile(E2E_PINS, emit)
+    engine = Engine(E2E_STATE, store.load_key(E2E_KEY), network=E2E_NETWORK,
+                    nick=NICK, ident=IDENT, pins=pins.load())
+    # 3 lines per 6 s per target: bahamut's CTCP flood limit (irc-olm pacing).
+    pacer = PacedSender(lambda target, body: send_raw(f"PRIVMSG {target} :{body}"))
+    bridge = e2e_bridge.Bridge(
+        engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, emit=emit, log=log,
+        trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold)
+    emit("E2E_READY", f"KEY={engine.fingerprint}", f"NETWORK={E2E_NETWORK}")
+
+
+def e2e_ticker_loop():
+    """Once a second: pins reload, challenge expiry, engine upkeep."""
+    while True:
+        time.sleep(1)
+        try:
+            bridge.tick()
+        except Exception as e:
+            emit("ERROR", "e2e-tick", repr(e))
 
 
 def main():
     global sock
     load_trust()
     load_dm_allow()
+    _start_e2e()   # before connecting: the 005 that sizes E2E lines comes early
     ctx = ssl.create_default_context()
     if not TLS_VERIFY:
         # Order matters: check_hostname must go first, CERT_NONE with hostname
@@ -1201,6 +1323,8 @@ def main():
     threading.Thread(target=writer_loop, daemon=True).start()
     threading.Thread(target=idle_ticker_loop, daemon=True).start()
     threading.Thread(target=converge_loop, daemon=True).start()
+    if bridge:
+        threading.Thread(target=e2e_ticker_loop, daemon=True).start()
     reader_loop()
 
 
