@@ -1292,8 +1292,8 @@ def _start_e2e():
     fakelag = FakeLag()
     pacer = PacedSender(_paced_write, Pacer(fakelag=fakelag))
     bridge = e2e_bridge.Bridge(
-        engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, emit=emit, log=log,
-        trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold)
+        engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, room=pacer.room, emit=emit,
+        log=log, trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold)
     emit("E2E_READY", f"KEY={engine.fingerprint}", f"NETWORK={E2E_NETWORK}")
 
 
