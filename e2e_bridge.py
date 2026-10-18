@@ -5,40 +5,45 @@ The crypto, framing and pacing live in the shared irc-olm package
 maps it onto bot.py: what reaches the event stream, under which trust verdict,
 and when an order needs a CHAL first.
 
-Trust, per vjt's rulings on #4:
+Keys are PINNED, never learned (vjt's final ruling, 2026-10-18): the operator
+pastes each peer's Ed25519 key into the pins file (BOT_E2E_PINS, one
+`<nick> <key>` per line) and the bot talks E2E only to those keys. An unknown
+key gets silence. There is no SAS and no confirm command on a bot; rotating a
+key means re-pasting it, and the file is reloaded when it changes. The bot
+only READS the pins file: the operator makes it root-owned (or denies it to
+the bot's Claude session), and the bot says so loudly when it could write it.
 
-  * A user with NO verified key keeps today's rules: layer 1 alone (trust list +
-    host glob + 307/330). Encrypting does not change the verdict, it adds
-    confidentiality. That is what makes this safe to ship before anyone has a
-    verified key.
-  * Once a user HAS a verified key, plaintext alone no longer counts (no
-    downgrade). In the encrypted query the session itself authenticates.
-    Outside it, a line addressed to the bot (or a plaintext PM) is held, a CHAL
-    goes out over the verified session, and the line is released as TRUSTED
-    only on a matching ACK within 15 s. Anything else from that user in plain
-    text is UNTRUSTED.
-  * A key that is not the verified one pinned to the nick is an alarm, and what
-    it says never reaches the stream.
+Trust has two layers:
+
+  * Layer 1 is today's rule for every line: the nick is in bot.trust, the host
+    matches its glob, and 307/330 says it is identified.
+  * Layer 2 is a pinned key for that nick. A user WITHOUT one keeps layer 1
+    alone, exactly as before. A user WITH one no longer counts in plain text
+    alone (no downgrade): in the encrypted query the session authenticates the
+    key. Outside it, a line addressed to the bot (its nick as a word) or a
+    plaintext PM is held, a CHAL goes out over the session, and the line is
+    released as TRUSTED only on a matching ACK within 15 s. Anything else from
+    that user in plain text is UNTRUSTED.
+  * A different key on a pinned nick is an alarm (E2E_KEY_ALARM), and what it
+    says never reaches the stream. So is a pinned key speaking under a nick
+    pinned to another key.
 
 Log hygiene: decrypted text appears ONLY as the BODY of the MSG event on stdout
-(ruling 3). bot.log gets the ciphertext lines plus `E2E MSG from X (n bytes)`.
-
-TODO(#4, vjt reconsidering): how a key becomes verified on the bot. SAS on the
-bot is on hold; the alternative is a pre-pinned key in the bot's
-configuration. Until he rules, nothing calls Engine.verify() here, so no key
-is verified and every user stays on layer 1.
+(ruling 7). bot.log gets the ciphertext lines plus `E2E MSG from X (n bytes)`.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
 from dataclasses import dataclass
 
-from irc_olm.engine import (AckOk, AckRejected, ChallengeExpired, Dropped, KeyAlarm,
-                            NotVerifiedError, PeerPinned, Received, RekeyThrottled,
-                            Rekeying, SendFailed, Undecryptable)
+from irc_olm import framing
+from irc_olm.engine import (AckOk, AckRejected, ChallengeExpired, Dropped, KeyAlarm, Received,
+                            Rekeying, Replayed, SendFailed, Undecryptable)
+from irc_olm.pins import PinsError, load_pins, pins_writable
 
 # How long a conversation stays "encrypted" for replies after the last
 # encrypted DM, so a SAY to that nick goes out encrypted too.
@@ -55,18 +60,71 @@ class _Held:
 
 
 def _fold(nick: str) -> str:
-    return nick.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                                        "abcdefghijklmnopqrstuvwxyz"))
+    return framing.fold(nick)
+
+
+def _one_line(text: str) -> str:
+    """Decrypted text as one event line. Unlike an IRC line it can carry CR,
+    LF or NUL (which would forge a second event) and lone surrogates (which
+    print() refuses)."""
+    text = text.replace("\r", " ").replace("\n", " ").replace("\0", " ")
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+class PinsFile:
+    """The operator's pins file. Read, never written; reloaded on change."""
+
+    def __init__(self, path: str, emit):
+        self.path = path
+        self._emit = emit
+        self._sig = None
+        self._error = None
+
+    def _stat(self):
+        st = os.stat(self.path)
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+    def load(self) -> dict[str, str]:
+        """The first load, at startup: a missing or broken file raises."""
+        self._sig = self._stat()
+        pins = load_pins(self.path)
+        self._loaded(pins)
+        return pins
+
+    def reload_if_changed(self) -> dict[str, str] | None:
+        """The new pins when the file changed and parses, else None. A broken
+        or missing file keeps the pins already loaded, and says so once."""
+        try:
+            sig = self._stat()
+            if sig == self._sig:
+                return None
+            self._sig = sig
+            pins = load_pins(self.path)
+        except (OSError, PinsError) as e:
+            if str(e) != self._error:
+                self._error = str(e)
+                self._emit("E2E_PINS_ERROR", f"PATH={self.path}", f"WHY={e}", "kept=previous")
+            return None
+        self._error = None
+        self._loaded(pins)
+        return pins
+
+    def _loaded(self, pins: dict[str, str]) -> None:
+        self._emit("E2E_PINS_LOADED", f"N={len(pins)}")
+        if pins_writable(self.path):
+            self._emit("E2E_PINS_WRITABLE", f"PATH={self.path}",
+                       "the operator must make it root-owned or deny it to the bot's Claude")
 
 
 class Bridge:
-    def __init__(self, engine, *, own_nick, submit, emit, log, trust_check, is_listed,
+    def __init__(self, engine, *, own_nick, pins, submit, emit, log, trust_check, is_listed,
                  hold_dm, clock=time.monotonic):
         self.engine = engine
         self.own_nick = own_nick
-        self._submit = submit            # (outbound pairs) -> None, paced
+        self._pins = pins                # PinsFile
+        self._submit = submit            # (outbound pairs) -> refused count, paced
         self._emit = emit
-        self._log = log
+        self._log = log                  # (direction, line, origin)
         self._trust_check = trust_check
         self._is_listed = is_listed
         self._hold_dm = hold_dm          # (nick, host, body, extra_fields) -> depth
@@ -80,6 +138,11 @@ class Bridge:
             r"(?<![A-Za-z0-9\[\]\\`^{}|_-])" + re.escape(own_nick) + r"(?![A-Za-z0-9\[\]\\`^{}|_-])",
             re.IGNORECASE)
 
+    @staticmethod
+    def is_e2e(body: str) -> bool:
+        """Any PRIVMSG body that claims to be E2E, well-formed or not."""
+        return framing.is_e2e(body)
+
     # --- server facts ------------------------------------------------------------
 
     def on_isupport(self, tokens: list[str]) -> None:
@@ -92,6 +155,14 @@ class Bridge:
 
     def on_own_mask(self, mask: str) -> None:
         self.engine.set_own_mask(mask)
+
+    def on_own_nick(self, nick: str) -> None:
+        """Our own NICK change: the receivers now see a different mask."""
+        with self._lock:
+            self.engine.nick = nick
+            mask = self.engine.own_mask
+            if mask and "!" in mask:
+                self.engine.set_own_mask(nick + mask[mask.index("!"):])
 
     # --- inbound E2E ---------------------------------------------------------------
 
@@ -118,28 +189,24 @@ class Bridge:
 
     def gate_plaintext(self, nick: str, host: str, prefix: str, target: str, body: str,
                        trusted: bool) -> str | None:
-        """Called for every plaintext PRIVMSG that passed layer 1 (or not).
+        """Called for every plaintext PRIVMSG that reached the verdict.
 
         Returns None when today's verdict stands, "held" when the line waits for
         an ACK (the bridge emits it later), "unchallenged" when it must be shown
-        UNTRUSTED because its author has a verified key and plain text alone no
+        UNTRUSTED because its author has a pinned key and plain text alone no
         longer counts."""
         is_pm = not target.startswith(("#", "&"))
         with self._lock:
             if is_pm:
                 self._reply_mode.pop(_fold(nick), None)
-            if not trusted:
-                return None
-            pinned = self.engine.pinned(nick)
-            if pinned is None or not pinned.verified:
+            if not trusted or self.engine.pinned(nick) is None:
                 return None
             if not (is_pm or self._addressed.search(body)):
                 return "unchallenged"
-            try:
-                ch, res = self.engine.challenge(nick, network=self.network_token, channel=target,
-                                                sender_mask=prefix, line=body.encode("utf-8"))
-            except NotVerifiedError:
-                return None
+            # Pins change only in tick(), under this same lock: the nick is
+            # still pinned here, so challenge() cannot raise NotPinnedError.
+            ch, res = self.engine.challenge(nick, network=self.network_token, channel=target,
+                                            sender_mask=prefix, line=body.encode("utf-8"))
             self._held[ch.nonce] = _Held(target, nick, host, body, is_pm)
             self.dispatch(res)
             self._emit("ORDER_HELD", f"FROM={nick}", f"HOST={host}", f"TO={target}",
@@ -153,23 +220,28 @@ class Bridge:
             at = self._reply_mode.get(_fold(nick))
             return at is not None and self._clock() - at < REPLY_MODE_TTL
 
-    def send_text(self, nick: str, text: str, action: bool = False) -> None:
+    def send_text(self, nick: str, text: str, *, action: bool, origin) -> None:
         with self._lock:
+            self._log(">", f"E2E {'ACT' if action else 'MSG'} to {nick} ({len(text.encode())} bytes)",
+                      origin)
             self.dispatch(self.engine.send(nick, {"t": "action" if action else "text",
                                                   "body": text}))
-            self._log(">", f"E2E {'ACT' if action else 'MSG'} to {nick} ({len(text.encode())} bytes)")
 
     # --- time ------------------------------------------------------------------------
 
     def tick(self) -> None:
+        """About once a second: pins reload, challenge expiry, engine upkeep."""
         with self._lock:
+            pins = self._pins.reload_if_changed()
+            if pins is not None:
+                self.engine.set_pins(pins)
             self.dispatch(self.engine.tick())
 
     # --- events ------------------------------------------------------------------------
 
     def dispatch(self, result) -> None:
-        if result.outbound:
-            self._submit(result.outbound)
+        if result.outbound and self._submit(result.outbound):
+            self._emit("E2E_PACER_FULL", "lines refused, see the journal")
         for e in result.events:
             self._on_event(e)
 
@@ -183,15 +255,14 @@ class Bridge:
         elif isinstance(e, AckRejected):
             self._emit("ORDER_ACK_REJECTED", f"FROM={e.nick}", f"REASON={e.reason}")
         elif isinstance(e, KeyAlarm):
-            self._emit("E2E_KEY_ALARM", f"FROM={e.nick}", f"PINNED={e.pinned.ed25519}",
-                       f"VERIFIED={int(e.pinned.verified)}", f"PRESENTED={e.presented.ed25519}")
-        elif isinstance(e, PeerPinned):
-            self._emit("E2E_PINNED", f"FROM={e.nick}", f"KEY={e.peer.ed25519}")
+            self._emit("E2E_KEY_ALARM", f"FROM={e.nick}", f"HOST={self._hosts.get(_fold(e.nick), '')}",
+                       f"PINNED={e.pinned}", f"PRESENTED={e.presented}")
+        elif isinstance(e, Replayed):
+            self._emit("E2E_REPLAYED", f"FROM={e.nick}")
         elif isinstance(e, Undecryptable):
             self._emit("E2E_UNDECRYPTABLE", f"FROM={e.nick}", f"REASON={e.reason}")
-        elif isinstance(e, (Rekeying, RekeyThrottled)):
-            self._emit("E2E_REKEY" if isinstance(e, Rekeying) else "E2E_REKEY_THROTTLED",
-                       f"FROM={e.nick}")
+        elif isinstance(e, Rekeying):
+            self._emit("E2E_REKEY", f"FROM={e.nick}")
         elif isinstance(e, SendFailed):
             self._emit("E2E_SEND_FAILED", f"TO={e.nick}", f"REASON={e.reason}", f"LOST={e.lost}")
         elif isinstance(e, Dropped):
@@ -201,16 +272,17 @@ class Bridge:
         kind = e.inner.get("t")
         body = e.inner.get("body")
         if kind not in ("text", "action") or not isinstance(body, str):
-            return  # chal / sas.* / unknown: nothing for the stream
+            return  # chal / unknown: nothing for the stream
+        body = _one_line(body)
         nick, host = e.nick, self._hosts.get(_fold(e.nick), "")
-        self._log("*", f"E2E MSG from {nick} ({len(body.encode())} bytes)")
+        self._log("*", f"E2E MSG from {nick} ({len(body.encode())} bytes)", None)
         pinned = self.engine.pinned(nick)
-        if pinned and pinned.verified and pinned.ed25519 != e.peer.ed25519:
-            self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=not-the-verified-key",
+        if pinned is None or pinned.ed25519 != e.peer.ed25519:
+            # A pinned key, but pinned to someone else: not this nick speaking.
+            self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=not-the-pinned-key",
                        f"LEN={len(body)}")
             return
-        verified = bool(pinned and pinned.verified)
-        extra = ["ENCRYPTED=1", f"VERIFIED={int(verified)}"] + (["ACTION=1"] if kind == "action" else [])
+        extra = ["ENCRYPTED=1"] + (["ACTION=1"] if kind == "action" else [])
         trusted, reason = self._trust_check(nick, host)
         if not trusted:
             if reason == "pending-whois":
