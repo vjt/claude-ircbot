@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from irc_olm import store  # noqa: E402
+from irc_olm import framing, store  # noqa: E402
 from irc_olm.engine import Engine, Received  # noqa: E402
 
 import e2e_bridge  # noqa: E402
@@ -57,7 +57,7 @@ class Harness:
         """The pacer's submit_all: queues everything, refuses nothing."""
         self.to_vjt.extend(outbound)
         self.urgent |= urgent
-        return 0
+        return []
 
     def write_pins(self, text):
         tmp = self.pins_path + ".tmp"
@@ -214,10 +214,19 @@ class BridgeTest(unittest.TestCase):
         self.h.bridge.send_text("nobody", "x", action=False, origin=None)
         self.assertIn("E2E_SEND_FAILED TO=nobody REASON=unpinned-nick LOST=1", self.h.events)
 
-    def test_lines_the_pacer_refuses_are_reported(self):
-        self.h.bridge._submit = lambda outbound, urgent: len(outbound)   # a full pacer
+    def test_messages_the_pacer_refuses_are_reported_and_forgotten(self):
+        self.h.say("ciao")                                  # a session both ways
+        refused = []
+
+        def full(outbound, urgent):                         # a full pacer
+            msgids = list(dict.fromkeys(framing.parse(b).msgid for _, b in outbound))
+            refused.extend(msgids)
+            return [("vjt", m) for m in msgids]
+        self.h.bridge._submit = full
         self.h.bridge.send_text("vjt", "x", action=False, origin=None)
-        self.assertTrue(any(e.startswith("E2E_PACER_FULL") for e in self.h.events))
+        self.assertIn("E2E_SEND_FAILED TO=vjt REASON=pacer-full LOST=1", self.h.events)
+        (msgid,) = refused
+        self.assertNotIn(msgid, self.h.bot._sent)           # no NACK can come for it
 
     # --- orders: users with a pinned key ---------------------------------------------
 
