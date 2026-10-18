@@ -35,7 +35,8 @@ account or client setup required.
   `PRIVMSG`s and sends them.
 
 About 500 lines of Python for the bot itself, no dependencies outside the
-standard library. A handful of small sidecars live alongside it (see
+standard library (the optional [encrypted queries](#end-to-end-encrypted-queries-optional)
+add one, irc-olm, and only where they are turned on). A handful of small sidecars live alongside it (see
 [Companions](#companions)).
 
 ## Running it
@@ -62,6 +63,10 @@ environment-overridable, which is what makes a second instance possible
 | `BOT_TRUST` | `bot.trust` | trust list (see below) |
 | `BOT_ENV` | `.env` | NickServ password file |
 | `BOT_STARTUP` | `bot.startup` | post-auth command replay |
+| `BOT_E2E_KEY` | unset (E2E off) | Olm pickle key, see [encrypted queries](#end-to-end-encrypted-queries-optional) |
+| `BOT_E2E_NETWORK` | unset | network id the Olm state is bound to (required with the key) |
+| `BOT_E2E_PINS` | unset | the operator's pinned keys (required with the key) |
+| `BOT_E2E_STATE` | `bot.e2e.state.json` | Olm account and sessions, mode 600 |
 
 Timestamps in `bot.log` and on the event stream are `Europe/Rome` wall
 clock regardless of the host TZ.
@@ -73,7 +78,7 @@ printf 'SAY #mychannel hello everyone\n' > bot.send
 ```
 
 Supported commands: `SAY`, `ACT`, `NOTICE`, `JOIN`, `PART`, `WHOIS`,
-`QUIT`, `RAW`.
+`QUIT`, `RAW`, `DCC`, and `ESAY` / `EACT` when encrypted queries are on.
 
 ### bot.say — writing to the FIFO without a quoting footgun
 
@@ -165,6 +170,78 @@ Example `bot.trust`:
 # <nick> <host_glob>
 vjt *.openssl.it
 ```
+
+### End-to-end encrypted queries (optional)
+
+Off unless `BOT_E2E_KEY` is set. When on, the bot speaks the encrypted query
+protocol of [grappa](https://github.com/vjt/grappa-irc) and its web client
+cicchetto (Olm, through [irc-olm](https://github.com/vjt/irc-olm)): the ircd
+and any bouncer only relay ciphertext. Without the variable the bot never
+imports irc-olm and behaves exactly as before.
+
+**Keys are pinned, never learned.** The bot talks E2E only to the Ed25519 keys
+the operator pasted into the pins file, and an unknown key gets silence: no
+keys, no error, no session. There is no fingerprint comparison and no confirm
+command on the bot (SAS is between humans, in cicchetto). Rotating a key means
+pasting the new one; the bot reloads the file when it changes, and keeps the
+previous pins if the new file does not parse.
+
+Setting it up, once per instance:
+
+1. A venv with irc-olm, since the system python stays dependency-free:
+   `python3 -m venv /opt/vjt-claude-e2e && /opt/vjt-claude-e2e/bin/pip install -r requirements-e2e.txt`,
+   and run `bot.py` with that interpreter.
+2. A key, outside the repo: `python -m irc_olm keygen /etc/vjt-claude/azzurra.key`.
+   It encrypts every secret in the state file; losing it means a new identity,
+   and every peer has to paste the new key.
+3. The pins file, one `<nick> <ed25519 key>` per line, the key exactly as the
+   peer's client shows it (cicchetto shows its own; 43 characters):
+
+   ```
+   # /etc/vjt-claude/e2e.pins
+   vjt Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE
+   ```
+
+   **The bot only reads this file, and its Claude session must not be able to
+   change it**, or a prompt injection could pin an attacker's key. Make it
+   root-owned in a root-owned directory (the bot user reads it, nobody else
+   writes it), or deny it in that session's permission rules. The bot cannot
+   enforce this: it emits `E2E_PINS_WRITABLE` at every load when it could
+   write the file.
+4. `BOT_E2E_KEY`, `BOT_E2E_NETWORK` (a fixed id such as `azzurra`: the state
+   file is bound to it) and `BOT_E2E_PINS` in the unit's environment. The bot
+   refuses to start with the key and without the other two.
+
+At startup the bot emits `E2E_READY KEY=<its own key> NETWORK=<id>`: that key
+is what the other side pastes. `python -m irc_olm identity --state <state file>`
+prints it too.
+
+**Trust, with a pinned key.** Layer 1 (the trust list above) still applies to
+every line. A user whose nick has a pinned key gets a second layer, and plain
+text alone no longer counts for them:
+
+- In the encrypted query the session authenticates the key:
+  `MSG TRUSTED ENCRYPTED=1 FROM=… BODY=…`.
+- A plaintext line addressed to the bot (its nick as a word) or a plaintext
+  PM is held (`ORDER_HELD`), and a challenge goes out over the encrypted
+  session. Their client answers only if it sent exactly that line in the last
+  15 s, and only then is it released as `MSG TRUSTED CONFIRMED=1`. Without the
+  answer a channel line is released as `MSG UNTRUSTED WHY=no-ack` and a PM is
+  dropped.
+- Any other plaintext line from them is `MSG UNTRUSTED WHY=unchallenged`.
+- A different key on a pinned nick is `E2E_KEY_ALARM` and never reaches the
+  stream; so is a pinned key speaking under a nick pinned to another key.
+
+`ESAY <nick> <text>` / `EACT <nick> <text>` send encrypted (queries only, never
+a channel), and a `SAY`/`ACT` to a nick whose last DM was encrypted is
+encrypted too. A message that cannot be delivered is `E2E_SEND_FAILED` with a
+reason. Outbound E2E lines are paced at 3 per 6 s per target, under bahamut's
+CTCP flood limit.
+
+**What lands where.** Decrypted text appears only as the `BODY` of the `MSG`
+event on stdout. `bot.log` gets the ciphertext lines and
+`E2E MSG from <nick> (<n> bytes)`, and a failing E2E command is reported with
+its text redacted.
 
 ## Agent contract
 
