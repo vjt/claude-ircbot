@@ -1290,7 +1290,11 @@ def _start_e2e():
     # Never past bahamut's flood bank for the connection, and 3 lines per 6 s
     # per target for the receiver's CTCP flood limit (irc-olm pacing).
     fakelag = FakeLag()
-    pacer = PacedSender(_paced_write, Pacer(fakelag=fakelag))
+    # What the pacer loses after queueing (a challenge too late to answer, a
+    # failed write) goes to the bridge, built right below: nothing is queued
+    # before it exists.
+    pacer = PacedSender(_paced_write, Pacer(fakelag=fakelag),
+                        on_lost=lambda nick, msgid, reason: bridge.on_lost(nick, msgid, reason))
     bridge = e2e_bridge.Bridge(
         engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, room=pacer.room, emit=emit,
         log=log, trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold)

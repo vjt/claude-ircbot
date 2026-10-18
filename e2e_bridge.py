@@ -256,6 +256,18 @@ class Bridge:
         for e in result.events:
             self._on_event(e)
 
+    def on_lost(self, nick: str, msgid: str | None, reason: str) -> None:
+        """irc-olm PacedSender's on_lost, on the pacer's thread: a message
+        lost after it was queued. "late" is a challenge that could no longer
+        be answered in time (its order ends as an unanswered one, like any
+        expired challenge); "send-failed" is a message a line of which failed
+        to write, the rest dropped: a lost reply."""
+        with self._lock:
+            if msgid is not None:
+                self.engine.discard([msgid])
+            if reason != "late":
+                self._emit("E2E_SEND_FAILED", f"TO={nick}", f"REASON={reason}", "LOST=1")
+
     def _on_event(self, e) -> None:
         if isinstance(e, Received):
             self._on_received(e)

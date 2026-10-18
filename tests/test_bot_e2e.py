@@ -219,6 +219,15 @@ class StartE2ETest(unittest.TestCase):
         finally:
             bot.sock = saved_sock
 
+    def test_what_the_pacer_loses_after_queueing_reaches_the_bridge(self):
+        events = self.start()
+        pacer = bot.bridge._submit.__self__                 # the PacedSender
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            pacer._on_lost("vjt", "AAAAAAAAAAA", "send-failed")
+        self.assertTrue(any(" E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1" in e
+                            for e in out.getvalue().splitlines()), events)
+
     def test_a_key_without_a_network_or_pins_fails_loudly(self):
         for missing in ("E2E_NETWORK", "E2E_PINS"):
             with self.subTest(missing=missing):

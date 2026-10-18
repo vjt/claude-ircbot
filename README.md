@@ -235,14 +235,21 @@ text alone no longer counts for them:
 `ESAY <nick> <text>` / `EACT <nick> <text>` send encrypted (queries only, never
 a channel), and a `SAY`/`ACT` to a nick whose last DM was encrypted is
 encrypted too. A message that cannot be delivered is `E2E_SEND_FAILED` with a
-reason; `REASON=pacer-full` means the queue for that nick is full (32 messages
-waiting), and nothing was sent. Outbound E2E lines never push the connection
+reason; `REASON=pacer-full` means the pacer has no room, and nothing was
+sent: 32 messages already wait for that nick (counting the ones refused behind
+them), or the 480 s of queued encrypted text all nicks share is full.
+`REASON=send-failed` is a message the socket failed halfway through, the rest
+of it dropped. Outbound E2E lines never push the connection
 past bahamut's flood bank (every line the bot writes counts in it, so E2E
 backs off while the bot talks) and never exceed 3 per 6 s per target, the
 receiver's CTCP flood limit. A long encrypted message is therefore slow: about
-one full line every 5 s. Challenges go ahead of queued text, about four a
-minute per user; a user addressing the bot faster than that gets the rest
-released as unanswered (`MSG UNTRUSTED WHY=no-ack`, a PM dropped).
+one full line every 5 s, but a message under way always reaches its reader.
+Challenges go ahead of queued encrypted text, four a minute for the whole bot
+(and one more for a user who gave no order in the last minute); with no
+encrypted text queued, every challenge goes as soon as the flood bank allows.
+A challenge that could no longer be answered within its 15 s is not sent:
+its order, like any unanswered one, is released as `MSG UNTRUSTED
+WHY=no-ack` (a PM dropped).
 
 **What lands where.** Decrypted text appears only as the `BODY` of the `MSG`
 event on stdout. `bot.log` gets the ciphertext lines and
