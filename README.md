@@ -235,8 +235,10 @@ text alone no longer counts for them:
 `ESAY <nick> <text>` / `EACT <nick> <text>` send encrypted (queries only, never
 a channel), and a `SAY`/`ACT` to a nick whose last DM was encrypted is
 encrypted too. A message that cannot be delivered is `E2E_SEND_FAILED` with a
-reason. Outbound E2E lines are paced at 3 per 6 s per target, under bahamut's
-CTCP flood limit.
+reason. Outbound E2E lines never push the connection past bahamut's flood
+bank (every line the bot writes counts in it, so E2E backs off while the bot
+talks) and never exceed 3 per 6 s per target, the receiver's CTCP flood limit.
+A long encrypted message is therefore slow: about one full line every 5 s.
 
 **What lands where.** Decrypted text appears only as the `BODY` of the `MSG`
 event on stdout. `bot.log` gets the ciphertext lines and
