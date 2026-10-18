@@ -253,6 +253,32 @@ class BridgeTest(unittest.TestCase):
         self.h.bridge.tick()
         self.assertTrue(any(e.startswith("MSG UNTRUSTED WHY=no-ack") for e in self.h.events))
 
+    def test_a_message_the_pacer_loses_after_queueing_is_reported_and_forgotten(self):
+        # irc-olm PacedSender(on_lost=...): a line of it failed to write, the
+        # rest was dropped, and its receiver can never complete it.
+        self.h.say("ciao")
+        self.h.to_vjt.clear()
+        self.h.bridge.send_text("vjt", "x", action=False, origin=None)
+        (msgid,) = {framing.parse(b).msgid for _, b in self.h.to_vjt}
+        self.assertIn(msgid, self.h.bot._sent)
+        self.h.bridge.on_lost("vjt", msgid, "send-failed")
+        self.assertIn("E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1", self.h.events)
+        self.assertNotIn(msgid, self.h.bot._sent)          # no NACK can come for it
+
+    def test_a_challenge_dropped_too_late_ends_as_an_unanswered_order_only(self):
+        # The pacer drops a CHAL that could no longer be answered in time: no
+        # lost reply to report, its order ends when the challenge expires.
+        self.h.say("ciao")
+        self.h.urgent.clear()
+        self.assertEqual(self.h.gate(f"{BOT}: riavvia"), "held")
+        (msgid,) = [m for m, ttl in self.h.urgent.items() if ttl is not None]
+        self.h.bridge.on_lost("vjt", msgid, "late")
+        self.assertFalse(any(e.startswith("E2E_SEND_FAILED") for e in self.h.events))
+        self.assertNotIn(msgid, self.h.bot._sent)
+        self.h.clock.t += 16
+        self.h.bridge.tick()
+        self.assertTrue(any(e.startswith("MSG UNTRUSTED WHY=no-ack") for e in self.h.events))
+
     # --- orders: users with a pinned key ---------------------------------------------
 
     def test_a_user_without_a_pinned_key_keeps_layer_one(self):
