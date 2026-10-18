@@ -174,12 +174,14 @@ class StartE2ETest(unittest.TestCase):
         self.pins = os.path.join(self.dir, "e2e.pins")
         with open(self.pins, "w") as f:
             f.write("vjt Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE\n")
-        self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge)
+        self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
+                       bot.fakelag)
         bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = self.key, "azzurra", self.pins
         bot.E2E_STATE = os.path.join(self.dir, "state.json")
 
     def tearDown(self):
-        bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge = self._saved
+        (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
+         bot.fakelag) = self._saved
 
     def start(self):
         out = io.StringIO()
@@ -200,6 +202,22 @@ class StartE2ETest(unittest.TestCase):
         self.assertIn("NETWORK=azzurra", ready)
         self.assertEqual(bot.bridge.engine.pinned("vjt").ed25519,
                          "Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE")
+
+    def test_every_line_the_bot_writes_is_charged_once_to_the_flood_bank(self):
+        self.start()
+        written, saved_sock = [], bot.sock
+        bot.sock = type("Sock", (), {"sendall": lambda _, data: written.append(data)})()
+        try:
+            import time
+            lag = bot.fakelag
+            bot.send_raw("PRIVMSG #sbiffo :" + "y" * 380)          # chat: charged here
+            after_chat = lag.bank(time.monotonic())
+            self.assertGreater(after_chat, 4.0)
+            bot._paced_write("vjt", "\x01E2E MSG AAAAAAAAAAA 1/1 eA==\x01")  # charged by the pacer
+            self.assertLessEqual(lag.bank(time.monotonic()), after_chat)
+            self.assertEqual(len(written), 2)
+        finally:
+            bot.sock = saved_sock
 
     def test_a_key_without_a_network_or_pins_fails_loudly(self):
         for missing in ("E2E_NETWORK", "E2E_PINS"):
