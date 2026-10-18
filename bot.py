@@ -108,6 +108,9 @@ E2E_NETWORK = _cfg("BOT_E2E_NETWORK", "")
 E2E_PINS = _cfg("BOT_E2E_PINS", "")
 E2E_VERBS = ("ESAY", "EACT")
 bridge = None  # e2e_bridge.Bridge when E2E is on
+# bahamut's flood bank for our connection (irc_olm.pacing.FakeLag), when E2E
+# is on: send_raw() charges every line, so E2E backs off while the bot talks.
+fakelag = None
 
 # Wall-clock timestamps in Europe/Rome (CET/CEST, DST-aware) instead of the
 # host's UTC. bot.log + the event stream were UTC until 2026-07-02, when vjt
@@ -471,6 +474,17 @@ def log(direction, line, origin=None):
 
 
 def send_raw(s, origin=None):
+    if fakelag is not None:
+        fakelag.charge(s, time.monotonic())
+    _write(s, origin)
+
+
+def _paced_write(target, body):
+    """The E2E pacer's writer: its lines are charged to the bank already."""
+    _write(f"PRIVMSG {target} :{body}", None)
+
+
+def _write(s, origin):
     log(">", s, origin)
     with send_lock:
         try:
@@ -1260,7 +1274,7 @@ def process_cmd(line):
 def _start_e2e():
     """Build the E2E bridge when BOT_E2E_KEY is set. Without it the bot stays
     stdlib-only and unchanged: irc-olm is imported here and nowhere else."""
-    global bridge
+    global bridge, fakelag
     if not E2E_KEY:
         return
     if not E2E_NETWORK or not E2E_PINS:
@@ -1268,13 +1282,15 @@ def _start_e2e():
     import e2e_bridge
     from irc_olm import store
     from irc_olm.engine import Engine
-    from irc_olm.pacing import PacedSender
+    from irc_olm.pacing import FakeLag, PacedSender, Pacer
 
     pins = e2e_bridge.PinsFile(E2E_PINS, emit)
     engine = Engine(E2E_STATE, store.load_key(E2E_KEY), network=E2E_NETWORK,
                     nick=NICK, ident=IDENT, pins=pins.load())
-    # 3 lines per 6 s per target: bahamut's CTCP flood limit (irc-olm pacing).
-    pacer = PacedSender(lambda target, body: send_raw(f"PRIVMSG {target} :{body}"))
+    # Never past bahamut's flood bank for the connection, and 3 lines per 6 s
+    # per target for the receiver's CTCP flood limit (irc-olm pacing).
+    fakelag = FakeLag()
+    pacer = PacedSender(_paced_write, Pacer(fakelag=fakelag))
     bridge = e2e_bridge.Bridge(
         engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, emit=emit, log=log,
         trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold)
