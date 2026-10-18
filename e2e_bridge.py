@@ -122,7 +122,7 @@ class Bridge:
         self.engine = engine
         self.own_nick = own_nick
         self._pins = pins                # PinsFile
-        self._submit = submit            # (outbound pairs) -> refused count, paced
+        self._submit = submit            # (outbound pairs, urgent msgids) -> refused count, paced
         self._emit = emit
         self._log = log                  # (direction, line, origin)
         self._trust_check = trust_check
@@ -240,7 +240,7 @@ class Bridge:
     # --- events ------------------------------------------------------------------------
 
     def dispatch(self, result) -> None:
-        if result.outbound and self._submit(result.outbound):
+        if result.outbound and self._submit(result.outbound, result.urgent):
             self._emit("E2E_PACER_FULL", "lines refused, see the journal")
         for e in result.events:
             self._on_event(e)

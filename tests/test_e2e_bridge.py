@@ -31,6 +31,7 @@ class Harness:
         self.listed = {"vjt", "lucy"}
         self.trust = {"vjt": (True, "ok"), "lucy": (True, "ok")}
         self.to_vjt = []
+        self.urgent = set()     # msgids the bridge handed to the pacer as urgent
         self.bot = self._engine(BOT)
         self.vjt = self._engine("vjt", pins={BOT: self.bot.fingerprint})
         self.pins_path = os.path.join(self.dir, "e2e.pins")
@@ -38,7 +39,7 @@ class Harness:
         self.pins = e2e_bridge.PinsFile(self.pins_path, self.emit)
         self.bot.set_pins(self.pins.load())
         self.bridge = e2e_bridge.Bridge(
-            self.bot, own_nick=BOT, pins=self.pins, submit=self.to_vjt.extend,
+            self.bot, own_nick=BOT, pins=self.pins, submit=self.submit,
             emit=self.emit,
             log=lambda d, line, origin=None: self.logs.append(f"{d} {line}"),
             trust_check=lambda n, h: self.trust.get(n.lower(), (False, "not-listed")),
@@ -51,6 +52,12 @@ class Harness:
 
     def emit(self, kind, *parts):
         self.events.append(" ".join([kind, *map(str, parts)]))
+
+    def submit(self, outbound, urgent):
+        """The pacer's submit_all: queues everything, refuses nothing."""
+        self.to_vjt.extend(outbound)
+        self.urgent |= urgent
+        return 0
 
     def write_pins(self, text):
         tmp = self.pins_path + ".tmp"
@@ -208,7 +215,7 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("E2E_SEND_FAILED TO=nobody REASON=unpinned-nick LOST=1", self.h.events)
 
     def test_lines_the_pacer_refuses_are_reported(self):
-        self.h.bridge._submit = len            # a pacer whose queue is full refuses them all
+        self.h.bridge._submit = lambda outbound, urgent: len(outbound)   # a full pacer
         self.h.bridge.send_text("vjt", "x", action=False, origin=None)
         self.assertTrue(any(e.startswith("E2E_PACER_FULL") for e in self.h.events))
 
@@ -231,6 +238,22 @@ class BridgeTest(unittest.TestCase):
         self.h.pump(self.h.vjt.send(BOT, {"t": "ack", "nonce": chal["nonce"]}))
         self.assertEqual(self.h.msgs(), [
             f"MSG TRUSTED CONFIRMED=1 FROM=vjt HOST={HOST} TO=#sbiffo BODY={line}"])
+
+    def test_the_challenge_goes_to_the_pacer_as_urgent_and_text_does_not(self):
+        from irc_olm import framing
+
+        def sent(verbs):
+            return {framing.parse(b).msgid for b in self.h.bot_wire
+                    if framing.parse(b).verb in verbs}
+
+        self.h.gate(f"{BOT}: riavvia il watchdog")
+        self.h.pump()
+        chal = sent({"PKMSG", "MSG"})
+        self.assertTrue(chal and chal <= self.h.urgent)      # it must beat 15 s
+        self.assertTrue(sent({"KEYREQ"}) <= self.h.urgent)
+        self.h.bridge.send_text("vjt", "a reply", action=False, origin=None)
+        self.h.pump()
+        self.assertFalse((sent({"PKMSG", "MSG"}) - chal) & self.h.urgent)
 
     def test_held_channel_line_without_ack_is_released_untrusted(self):
         self.h.gate(f"{BOT}: rm -rf")
