@@ -245,15 +245,17 @@ backs off while the bot talks) and never exceed 3 per 6 s per target, the
 receiver's CTCP flood limit. A long encrypted message is therefore slow: about
 one full line every 5 s, and under load at least one every 46 s, so a message
 under way always reaches its reader (who waits 60 s for the next fragment).
-Challenges go ahead of queued encrypted text, four a minute for the whole bot;
-one more a minute is shared by a user who gave no order in the last minute
-and by first contacts. A first contact's key answer (`KEYS`) waits behind the
-challenges for 8 s, then goes before the ones queued after that instant (those
-queued before keep their place), paid from that shared allowance; a `NACK`
-never goes before a challenge. An encrypted message, or a key answer, under
-way that has waited 20 s for its next line goes before them too (its reader
-drops it at 60 s). With nothing else queued, every challenge goes as soon as
-the flood bank allows.
+Challenges go ahead of queued encrypted text, four a minute for the whole bot.
+A first contact's key answer (`KEYS`) waits behind the challenges for 8 s,
+then goes before the ones queued after that instant (those queued before keep
+their place). A user who gave no order in the last minute and the first
+contacts share what the challenges leave of five a minute, and the four are
+kept whatever the first contacts took, so queued encrypted text waits longer
+when several first contacts arrive together. A `NACK` never goes before a
+challenge. An encrypted message, or a key answer, under way that has waited
+20 s for its next line goes before them too (its reader drops it at 60 s).
+With nothing else queued, every challenge goes as soon as the flood bank
+allows.
 A challenge that could no longer be answered within its 15 s is not sent:
 its order, like any unanswered one, is released as `MSG UNTRUSTED
 WHY=no-ack` (a PM dropped).
