@@ -243,10 +243,17 @@ of it dropped. Outbound E2E lines never push the connection
 past bahamut's flood bank (every line the bot writes counts in it, so E2E
 backs off while the bot talks) and never exceed 3 per 6 s per target, the
 receiver's CTCP flood limit. A long encrypted message is therefore slow: about
-one full line every 5 s, but a message under way always reaches its reader.
-Challenges go ahead of queued encrypted text, four a minute for the whole bot
-(and one more for a user who gave no order in the last minute); with no
-encrypted text queued, every challenge goes as soon as the flood bank allows.
+one full line every 5 s, and under load at least one every 46 s, so a message
+under way always reaches its reader (who waits 60 s for the next fragment).
+Challenges go ahead of queued encrypted text, four a minute for the whole bot;
+one more a minute is shared by a user who gave no order in the last minute
+and by first contacts. A first contact's key answer (`KEYS`) waits behind the
+challenges for 8 s, then goes before the ones queued after that instant (those
+queued before keep their place), paid from that shared allowance; a `NACK`
+never goes before a challenge. An encrypted message, or a key answer, under
+way that has waited 20 s for its next line goes before them too (its reader
+drops it at 60 s). With nothing else queued, every challenge goes as soon as
+the flood bank allows.
 A challenge that could no longer be answered within its 15 s is not sent:
 its order, like any unanswered one, is released as `MSG UNTRUSTED
 WHY=no-ack` (a PM dropped).
