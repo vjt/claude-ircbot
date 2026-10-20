@@ -10,6 +10,7 @@ bot.stdout.log
 bot.trust
 bot.trust.libera
 bot.trust.convento
+bot.dmallow*
 
 # Libera.Chat instance runtime (2nd bot: same code, own nick/FIFO/logs/env).
 .env.libera
