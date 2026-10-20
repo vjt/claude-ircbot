@@ -81,6 +81,7 @@ TLS_VERIFY = _cfg("IRC_TLS_VERIFY", "1") not in ("0", "no", "off", "false")
 LOG = _cfg("BOT_LOG", os.path.join(HERE, "bot.log"))
 FIFO = _cfg("BOT_FIFO", os.path.join(HERE, "bot.send"))
 TRUST_FILE = _cfg("BOT_TRUST", os.path.join(HERE, "bot.trust"))
+DM_ALLOW_FILE = _cfg("BOT_DM_ALLOW", os.path.join(HERE, "bot.dmallow"))
 ENV_FILE = _cfg("BOT_ENV", os.path.join(HERE, ".env"))
 STARTUP_FILE = _cfg("BOT_STARTUP", os.path.join(HERE, "bot.startup"))
 # Shared by ALL instances on purpose (not per-network): see leak_guard.py.
@@ -131,6 +132,7 @@ tmp_nick = None         # the throwaway nick we fell back to
 # AND we must have received RPL_WHOISREGNICK (307) confirming the nick is
 # registered+identified to services. Cache reset on PART/QUIT/NICK.
 trust_rules = []  # list of (nick_lower, host_glob)
+dm_allow_rules = []  # list of (nick_lower, host_glob): DMs pass, never trusted
 verified = set()  # lowercase nicks confirmed via 307
 whois_pending = set()  # lowercase nicks we WHOIS'd, awaiting 307/318
 
@@ -263,6 +265,29 @@ def load_trust():
         pass
     trust_rules = out
     emit("TRUST_LOADED", len(trust_rules))
+
+
+def load_dm_allow():
+    """bot.dmallow: `nick host_glob` lines whose DMs get through as UNTRUSTED.
+    Readable, never authoritative — the trust list stays the only authority
+    (vjt 2026-10-20, puppy: «allow sui suoi dm solo ma NON trusted»)."""
+    global dm_allow_rules
+    out = []
+    try:
+        with open(DM_ALLOW_FILE) as f:
+            for line in f:
+                parts = line.split("#", 1)[0].split()
+                if len(parts) == 2:
+                    out.append((parts[0].lower(), parts[1]))
+    except FileNotFoundError:
+        pass
+    dm_allow_rules = out
+    emit("DM_ALLOW_LOADED", len(dm_allow_rules))
+
+
+def dm_allowed(nick, host):
+    n = nick.lower()
+    return any(an == n and fnmatch.fnmatch(host, hg) for an, hg in dm_allow_rules)
 
 
 def is_trust_listed(nick):
@@ -457,6 +482,71 @@ def split_say(target, text, origin=None):
             cut += 1  # keep the breaking space on this chunk, don't strip it
         send_raw(f"PRIVMSG {target} :{b[:cut].decode('utf-8', errors='ignore')}", origin)
         b = b[cut:]
+
+
+# !bolletta (alias !token, !usage): the Claude subscription usage, read from the
+# endpoint `/usage` in Claude Code calls. Undocumented, so the parse is
+# defensive. Trusted senders only (vjt, #grappa 2026-10-13). The OAuth token is
+# Claude Code's: re-read from disk on every call and NEVER refreshed here — a
+# refresh from this side would rotate it under the live session.
+USAGE_CMDS = ("!bolletta", "!token", "!usage")
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_CREDS = _cfg("BOT_USAGE_CREDS", os.path.expanduser("~/.claude/.credentials.json"))
+USAGE_LABELS = {"session": "sessione 5h", "weekly_all": "settimana"}
+USAGE_DAYS = ("lun", "mar", "mer", "gio", "ven", "sab", "dom")
+
+
+def _usage_reset(iso):
+    try:
+        t = datetime.fromisoformat(iso).astimezone(_TZ)
+        return f"{USAGE_DAYS[t.weekday()]} {t:%H:%M}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def usage_line():
+    import json
+    import urllib.error
+    import urllib.request
+    try:
+        with open(USAGE_CREDS) as f:
+            tok = json.load(f)["claudeAiOauth"]["accessToken"]
+    except (OSError, ValueError, KeyError) as e:
+        return f"bolletta: credenziali illeggibili ({type(e).__name__})"
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": f"Bearer {tok}",
+        "anthropic-beta": "oauth-2025-04-20",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        return f"bolletta: HTTP {e.code}"
+    except (OSError, ValueError) as e:
+        return f"bolletta: errore ({type(e).__name__})"
+    parts = []
+    for lim in data.get("limits") or []:
+        if not isinstance(lim, dict):
+            continue
+        kind = lim.get("kind")
+        pct = lim.get("percent")
+        if kind == "weekly_scoped":
+            if not pct:
+                continue
+            model = ((lim.get("scope") or {}).get("model") or {}).get("display_name") or "?"
+            label = f"settimana {model}"
+        else:
+            label = USAGE_LABELS.get(kind, kind)
+        parts.append(f"{label} {pct}% (reset {_usage_reset(lim.get('resets_at'))})")
+    if not parts:
+        return "bolletta: risposta senza limiti leggibili"
+    return "bolletta: " + " · ".join(parts)
+
+
+def usage_reply(target):
+    line = usage_line()
+    split_say(target, line, "bolletta")
+    emit("BOLLETTA", f"TO={target}", line)
 
 
 # DCC SEND. Serve a EliteWarez: il `!list` offre "warez", e prima o poi uno
@@ -854,7 +944,11 @@ def handle_server_line(line):
         # Private message from a nick that isn't even trust-listed: drop it
         # here. No BODY is emitted — the whole point is that the payload never
         # reaches the event stream (vjt 2026-08-03).
-        if not target.startswith(("#", "&")) and dm_blocked(nick):
+        is_dm = not target.startswith(("#", "&"))
+        if is_dm and dm_allowed(nick, host):
+            emit("MSG", "UNTRUSTED", f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
+            return
+        if is_dm and dm_blocked(nick):
             replied = dm_reject_once(nick)
             emit(
                 "DM_BLOCKED",
@@ -884,6 +978,9 @@ def handle_server_line(line):
         emit("MSG", trust, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
+        if trusted and body.strip().lower() in USAGE_CMDS:
+            reply_to = target if target.startswith(("#", "&")) else nick
+            threading.Thread(target=usage_reply, args=(reply_to,), daemon=True).start()
         # Re-arm the idle timer only on HUMAN PRIVMSG to a tracked channel.
         # Our own outgoing messages don't reach this path.
         if target.startswith("#") and nick.lower() != NICK.lower():
@@ -1076,6 +1173,7 @@ def process_cmd(line):
 def main():
     global sock
     load_trust()
+    load_dm_allow()
     ctx = ssl.create_default_context()
     if not TLS_VERIFY:
         # Order matters: check_hostname must go first, CERT_NONE with hostname
