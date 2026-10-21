@@ -313,6 +313,25 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1", self.h.events)
         self.assertNotIn(msgid, self.h.bot._sent)          # no NACK can come for it
 
+    def test_a_loss_the_pacer_reports_while_dispatch_hands_it_over_is_not_missed(self):
+        # on_lost runs on the pacer's thread, and can come before dispatch has
+        # recorded the message as text: dispatch holds the lock throughout.
+        import threading
+        self.h.say("ciao")
+        bridge, threads = self.h.bridge, []
+
+        def submit(outbound, urgent):                   # the pacer fails it at once
+            (msgid,) = {framing.parse(b).msgid for _, b in outbound}
+            t = threading.Thread(target=bridge.on_lost, args=("vjt", msgid, "send-failed"))
+            t.start()
+            t.join(0.2)
+            threads.append(t)
+            return []
+        bridge._submit = submit
+        bridge.dispatch(bridge.engine.send("vjt", {"t": "text", "body": "x"}))
+        threads[0].join(5)
+        self.assertIn("E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1", self.h.events)
+
     def test_a_lost_keyreq_or_keys_is_not_a_lost_reply(self):
         # The protocol recovers from those (or the engine reports what they
         # cost): only a message the bot wrote is reported lost.
