@@ -98,12 +98,15 @@ RESERVED_STORE = _cfg("BOT_RESERVED_STORE", os.path.join(HERE, "reserved_recent.
 # dependency, so an instance without E2E stays stdlib-only and unchanged.
 # One identity per network: each instance has its own key, state and network id.
 # The network id binds the state file, so it must never change for an instance
-# (the server name can: IRCnet's already did).
+# (the server name can: IRCnet's already did). The state defaults to
+# $XDG_STATE_HOME/claude-ircbot/<network id>.e2e.json: out of the repo, and one
+# per instance. The key and the state are secrets the bot's Claude session must
+# not reach either (README "Out of the session's reach").
 # The pins file (BOT_E2E_PINS) holds the only keys the bot talks E2E with, and
 # the bot only ever READS it: the operator makes it root-owned, or denies it to
 # the bot's Claude session (see README). Required once E2E is on.
 E2E_KEY = _cfg("BOT_E2E_KEY", "")
-E2E_STATE = _cfg("BOT_E2E_STATE", os.path.join(HERE, "bot.e2e.state.json"))
+E2E_STATE = _cfg("BOT_E2E_STATE", "")
 E2E_NETWORK = _cfg("BOT_E2E_NETWORK", "")
 E2E_PINS = _cfg("BOT_E2E_PINS", "")
 E2E_VERBS = ("ESAY", "EACT")
@@ -1301,13 +1304,21 @@ def _start_e2e():
         return
     if not E2E_NETWORK or not E2E_PINS:
         raise ValueError("BOT_E2E_KEY is set: BOT_E2E_NETWORK and BOT_E2E_PINS are required too")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", E2E_NETWORK):
+        raise ValueError("BOT_E2E_NETWORK names the state file: letters, digits, '.', '_', '-'")
     import e2e_bridge
     from irc_olm import store
     from irc_olm.engine import Engine
     from irc_olm.pacing import FakeLag, PacedSender, Pacer
 
+    state = E2E_STATE
+    if not state:
+        base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                            "claude-ircbot")
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        state = os.path.join(base, f"{E2E_NETWORK}.e2e.json")
     pins = e2e_bridge.PinsFile(E2E_PINS, emit)
-    engine = Engine(E2E_STATE, store.load_key(E2E_KEY), network=E2E_NETWORK,
+    engine = Engine(state, store.load_key(E2E_KEY), network=E2E_NETWORK,
                     nick=NICK, ident=IDENT, pins=pins.load())
     # Never past bahamut's flood bank for the connection, and 3 lines per 6 s
     # per target for the receiver's CTCP flood limit (irc-olm pacing).
