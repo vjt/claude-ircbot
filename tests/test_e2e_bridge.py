@@ -190,7 +190,29 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.h.msgs(), [])
         self.assertTrue(any(e.startswith("E2E_DROPPED FROM=vjt") and "REASON=not-the-pinned-key" in e
                             for e in self.h.events))
+        # an impersonation of a pinned nick: the alarm the Monitor wakes on
+        self.assertIn(f"E2E_KEY_ALARM FROM=vjt HOST={HOST} PINNED={self.h.bot.pinned('vjt').ed25519} "
+                      f"PRESENTED={lucy.fingerprint}", self.h.events)
         self.assertNoPlaintextLeak("sono vjt")
+
+    def test_a_pinned_key_heard_from_a_nick_without_a_pin_pins_nothing_there(self):
+        # irc-olm moves its routing hint to wherever a pinned key last spoke.
+        # That is no pin: lucy (listed, no key) keeps layer 1 alone, and
+        # nothing from vjt's key is taken as hers.
+        self.h.say("ciao")                              # a session, as vjt
+        self.h.say("sono lucy", sender="lucy")          # the same key, from nick lucy
+        self.assertEqual(self.h.bot.pinned("lucy").ed25519, self.h.vjt.fingerprint)  # the hint
+        self.assertFalse(any("FROM=lucy" in m for m in self.h.msgs()))
+        self.assertTrue(any(e.startswith("E2E_DROPPED FROM=lucy") and "REASON=not-the-pinned-key" in e
+                            for e in self.h.events))
+        self.assertFalse(any(e.startswith("E2E_KEY_ALARM FROM=lucy") for e in self.h.events))
+        self.assertFalse(self.h.bridge.wants_encryption("lucy"))
+        self.assertIsNone(self.h.gate("fammi un favore", target=BOT, nick="lucy"))
+        self.assertIsNone(self.h.gate("chiacchiere", nick="lucy"))
+        self.h.to_vjt.clear()
+        self.h.bridge.send_text("lucy", "solo per lucy", action=False, origin=None)
+        self.assertIn("E2E_SEND_FAILED TO=lucy REASON=unpinned-nick LOST=1", self.h.events)
+        self.assertEqual(self.h.to_vjt, [])
 
     # --- replies ---------------------------------------------------------------------
 

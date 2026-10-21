@@ -72,13 +72,20 @@ def _one_line(text: str) -> str:
 
 
 class PinsFile:
-    """The operator's pins file. Read, never written; reloaded on change."""
+    """The operator's pins file. Read, never written; reloaded on change.
+
+    `keys` is what it says, folded nick -> Ed25519 key: "the key pinned to
+    this nick" for the bridge. engine.pinned() is NOT that: past the
+    configured nicks it answers for wherever a pinned key last spoke (irc-olm
+    keeps it to route replies to a renamed peer, in the state file), and a
+    routing hint must never decide whose words a message is."""
 
     def __init__(self, path: str, emit):
         self.path = path
         self._emit = emit
         self._sig = None
         self._error = None
+        self.keys: dict[str, str] = {}
 
     def _stat(self):
         st = os.stat(self.path)
@@ -110,6 +117,8 @@ class PinsFile:
         return pins
 
     def _loaded(self, pins: dict[str, str]) -> None:
+        # parse_pins accepts one spelling per key, the engine's own.
+        self.keys = {_fold(nick): key for nick, key in pins.items()}
         self._emit("E2E_PINS_LOADED", f"N={len(pins)}")
         if pins_writable(self.path):
             self._emit("E2E_PINS_WRITABLE", f"PATH={self.path}",
@@ -200,7 +209,7 @@ class Bridge:
         with self._lock:
             if not trusted:
                 return None
-            if self.engine.pinned(nick) is None:
+            if self._pinned_key(nick) is None:
                 if is_pm:
                     # Released TRUSTED in plain text: so is the reply.
                     self._reply_mode.pop(_fold(nick), None)
@@ -219,6 +228,9 @@ class Bridge:
 
     # --- outbound ------------------------------------------------------------------
 
+    def _pinned_key(self, nick: str) -> str | None:
+        return self._pins.keys.get(_fold(nick))
+
     def wants_encryption(self, nick: str) -> bool:
         with self._lock:
             at = self._reply_mode.get(_fold(nick))
@@ -228,6 +240,11 @@ class Bridge:
         with self._lock:
             self._log(">", f"E2E {'ACT' if action else 'MSG'} to {nick} ({len(text.encode())} bytes)",
                       origin)
+            if self._pinned_key(nick) is None:
+                # E2E goes only to a nick the operator pinned, never to where
+                # irc-olm last heard a pinned key (engine.pinned's hint).
+                self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=unpinned-nick", "LOST=1")
+                return
             if not self._room(nick):
                 # Asked first: a message the pacer refuses was encrypted all
                 # the same, and the receiver would skip its key.
@@ -302,9 +319,15 @@ class Bridge:
         body = _one_line(body)
         nick, host = e.nick, self._hosts.get(_fold(e.nick), "")
         self._log("*", f"E2E MSG from {nick} ({len(body.encode())} bytes)", None)
-        pinned = self.engine.pinned(nick)
-        if pinned is None or pinned.ed25519 != e.peer.ed25519:
-            # A pinned key, but pinned to someone else: not this nick speaking.
+        pinned = self._pinned_key(nick)
+        if pinned != e.peer.ed25519:
+            # A pinned key, but not this nick's: not this nick speaking.
+            if pinned is not None:
+                # Under a nick pinned to another key: an impersonation, which
+                # is what the alarm is for. (Under a nick with no pin it is a
+                # renamed peer at most, and layer 1 is that nick's.)
+                self._emit("E2E_KEY_ALARM", f"FROM={nick}", f"HOST={host}", f"PINNED={pinned}",
+                           f"PRESENTED={e.peer.ed25519}")
             self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=not-the-pinned-key",
                        f"LEN={len(body)}")
             return
