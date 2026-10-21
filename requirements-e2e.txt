@@ -1,4 +1,5 @@
 # Only for the E2E bridge (BOT_E2E_KEY) and its tests; bot.py itself is
 # stdlib-only without it. irc-olm is pinned by commit (vjt/irc-olm main after
-# PR 2, the fake-lag pacer); it pins vodozemac==0.10.0 itself.
-irc-olm @ git+https://github.com/vjt/irc-olm@77688e5ac238ab2d720a357a7c8bf9862065d837
+# PR 3: the fake-lag pacer, and a challenge never counted as a lost message);
+# it pins vodozemac==0.10.0 itself.
+irc-olm @ git+https://github.com/vjt/irc-olm@309c9c7374e68528beddf3c8a1d9beb265f7a302
