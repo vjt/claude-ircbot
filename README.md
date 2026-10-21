@@ -254,6 +254,12 @@ text alone no longer counts for them:
 - Any other plaintext line from them is `MSG UNTRUSTED WHY=unchallenged`.
 - A different key on a pinned nick is `E2E_KEY_ALARM` and never reaches the
   stream; so is a pinned key speaking under a nick pinned to another key.
+- Under any other nick their key gets nothing: what it sends from a nick
+  without a pin is dropped (`E2E_DROPPED REASON=unpinned-nick`), the answer
+  to a challenge included, so an order whose author changed nick before
+  answering ends as unanswered. Only a `NACK` still gets through, so a reply
+  the bot sent before the rename and the peer could not read is reported
+  (`E2E_SEND_FAILED REASON=nack-from-another-nick`).
 
 `ESAY <nick> <text>` / `EACT <nick> <text>` send encrypted (queries only, never
 a channel). A `SAY`/`ACT` to a nick is encrypted too while the last DM from

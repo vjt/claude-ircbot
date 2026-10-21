@@ -346,6 +346,54 @@ class BridgeTest(unittest.TestCase):
         threads[0].join(5)
         self.assertIn("E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1", self.h.events)
 
+    def test_a_nack_from_a_peer_that_renamed_reports_the_lost_reply(self):
+        from irc_olm.engine import WIRE_VERSION
+        self.h.say("ciao")
+        self.h.bridge.send_text("vjt", "la tua risposta", action=False, origin=None)
+        (msgid,) = {framing.parse(b).msgid for _, b in self.h.to_vjt}
+        self.h.to_vjt.clear()       # vjt cannot decrypt it, renames to lucy, NACKs
+        for body in framing.fragment("NACK", framing.encode_payload({"v": WIRE_VERSION, "ref": msgid}),
+                                     own_mask=f"lucy!v@{HOST}", target=BOT):
+            self.h.bridge.on_e2e_line("lucy", HOST, BOT, body)
+        self.assertIn("E2E_SEND_FAILED TO=vjt REASON=nack-from-another-nick LOST=1", self.h.events)
+        self.assertEqual(self.h.to_vjt, [])         # never answered, never re-sent
+
+    def test_a_hint_left_on_a_nick_whose_pin_went_gets_nothing(self):
+        # vjt's key once spoke from lucy while lucy was pinned to her own key,
+        # then the operator dropped lucy's pin: irc-olm's hint for vjt's key
+        # is still lucy. Nothing may follow it there.
+        lucy = self.h._engine("lucy", pins={BOT: self.h.bot.fingerprint})
+        self.h.write_pins(f"vjt {self.h.vjt.fingerprint}\nlucy {lucy.fingerprint}\n")
+        self.h.clock.t += 1
+        self.h.bridge.tick()
+        self.h.say("ciao")
+        self.h.say("sono lucy", sender="lucy")
+        self.h.write_pins(f"vjt {self.h.vjt.fingerprint}\n")
+        self.h.clock.t += 61
+        self.h.bridge.tick()
+        self.assertEqual(self.h.bot.pinned("lucy").ed25519, self.h.vjt.fingerprint)  # the hint
+        self.h.to_vjt.clear()
+        fresh = self.h._engine("lucy2", pins={BOT: self.h.bot.fingerprint})
+        self.h.bridge.on_e2e_line("lucy", HOST, BOT,
+                                  fresh.send(BOT, {"t": "text", "body": "x"}).outbound[0][1])
+        self.h.bridge.send_text("lucy", "solo per lucy", action=False, origin=None)
+        self.assertIsNone(self.h.gate("fammi un favore", target=BOT, nick="lucy"))
+        self.assertEqual(self.h.to_vjt, [])
+        self.assertIn("E2E_SEND_FAILED TO=lucy REASON=unpinned-nick LOST=1", self.h.events)
+
+    def test_a_challenge_a_dead_pacer_cannot_take_ends_once(self):
+        # The order still ends when its challenge expires; raising to the
+        # caller as well would end it a second time.
+        def dead(outbound, urgent):
+            raise RuntimeError("the pacer's thread died: nothing goes out")
+        self.h.bridge._submit = dead
+        self.assertEqual(self.h.gate("ferma il bot", target=BOT), "held")
+        self.assertTrue(any(e.startswith("ERROR chal-send-fail FROM=vjt") for e in self.h.events))
+        self.h.clock.t += 16
+        self.h.bridge.tick()
+        self.assertEqual([e for e in self.h.events if e.startswith("DM_DROPPED")],
+                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=12 no-ack"])
+
     def test_a_lost_keyreq_or_keys_is_not_a_lost_reply(self):
         # The protocol recovers from those (or the engine reports what they
         # cost): only a message the bot wrote is reported lost.

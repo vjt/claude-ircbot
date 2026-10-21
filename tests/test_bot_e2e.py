@@ -52,20 +52,24 @@ class FakeBridge:
 class BotE2ETest(unittest.TestCase):
     def setUp(self):
         self.sent = []
-        self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified))
+        self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified),
+                       dict(bot.dm_held))
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
         bot.trust_rules = [("vjt", "*.openssl.it")]
         bot.verified.clear()
         bot.verified.add("vjt")
+        bot.dm_held.clear()
         self.out = io.StringIO()
         self._redirect = contextlib.redirect_stdout(self.out)
         self._redirect.__enter__()
 
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
-        bot.send_raw, bot.bridge, bot.trust_rules, verified = self._saved
+        bot.send_raw, bot.bridge, bot.trust_rules, verified, held = self._saved
         bot.verified.clear()
         bot.verified.update(verified)
+        bot.dm_held.clear()
+        bot.dm_held.update(held)
 
     def events(self):
         return self.out.getvalue().splitlines()
@@ -140,6 +144,13 @@ class BotE2ETest(unittest.TestCase):
         self.assertEqual([e.split(" ", 1)[1] for e in self.events()], [
             f"DM_DROPPED FROM=vjt HOST={HOST} LEN=5 error:RuntimeError",
             f"MSG TRUSTED FROM=vjt HOST={HOST} TO={bot.NICK} HELD=1 BODY=secondo"])
+
+    def test_a_held_dm_pushed_out_of_the_queue_says_so(self):
+        bot.verified.discard("vjt")
+        for i in range(bot.DM_HOLD_MAX + 1):
+            bot.dm_hold("vjt", HOST, f"m{i}", ("ENCRYPTED=1",))
+        self.assertEqual([e.split(" ", 1)[1] for e in self.events()],
+                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=2 evicted ENCRYPTED=1"])
 
     def test_a_dropped_held_dm_says_it_was_encrypted(self):
         # Its ciphertext alone is in bot.log: the drop is all there is to see.
@@ -351,7 +362,7 @@ class RealBridgeTest(unittest.TestCase):
         self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
                        bot.fakelag, bot.send_raw, bot.trust_rules, set(bot.verified),
                        set(bot.whois_pending), dict(bot.dm_held), bot.registered,
-                       bot.startup_fired, bot.tmp_nick, bot.ghost_needed)
+                       bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me)
         bot.startup_fired = True                        # no startup replay thread here
         bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = key, "azzurra", pins
         bot.E2E_STATE = os.path.join(self.dir, "state.json")
@@ -372,7 +383,7 @@ class RealBridgeTest(unittest.TestCase):
         self._redirect.__exit__(None, None, None)
         (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge, bot.fakelag,
          bot.send_raw, bot.trust_rules, verified, pending, held, bot.registered,
-         bot.startup_fired, bot.tmp_nick, bot.ghost_needed) = self._saved
+         bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me) = self._saved
         bot.verified.clear()
         bot.verified.update(verified)
         bot.whois_pending.clear()
@@ -427,6 +438,18 @@ class RealBridgeTest(unittest.TestCase):
         self.assertEqual(bot.bridge.engine.nick, fallback)
         bot.handle_server_line(f":{fallback}!claude@host.example JOIN :#sbiffo")
         self.assertEqual(bot.bridge.engine.own_mask, f"{fallback}!claude@host.example")
+
+    def test_whoever_takes_the_fallback_nick_after_the_reclaim_moves_nothing(self):
+        bot.registered = False
+        bot.handle_server_line(f":srv 433 * {bot.NICK} :Nickname is already in use")
+        fallback = bot.tmp_nick
+        bot.handle_server_line(f":srv 001 {fallback} :Welcome to the network")
+        bot.handle_server_line(f":{fallback}!claude@host.example NICK :{bot.NICK}")  # reclaimed
+        bot.handle_server_line(f":{bot.NICK}!claude@host.example JOIN :#sbiffo")
+        bot.handle_server_line(f":{fallback}!x@y.z JOIN :#sbiffo")                  # a stranger
+        bot.handle_server_line(f":{fallback}!x@y.z NICK :q")
+        self.assertEqual(bot.bridge.own_nick, bot.NICK)
+        self.assertEqual(bot.bridge.engine.own_mask, f"{bot.NICK}!claude@host.example")
 
     def test_the_reply_to_an_encrypted_dm_held_for_whois_is_encrypted(self):
         self.deliver(self.vjt.send(bot.NICK, {"t": "text", "body": "dimmi la password del db"}))

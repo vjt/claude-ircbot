@@ -213,13 +213,17 @@ class Bridge:
             self._emit("E2E_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
                        reason)
             return
-        if self._pinned_key(nick) is None:
-            # The bot sends E2E to no such nick, so it expects nothing from one.
-            # Handed to the engine, a pinned key speaking from here would move
-            # irc-olm's routing hint, and a KEYREQ would then get keys.
-            self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=unpinned-nick")
-            return
         with self._lock:
+            frag = framing.parse(body)
+            if self._pinned_key(nick) is None and (frag is None or frag.verb != "NACK"):
+                # The bot sends E2E to no such nick, so it expects nothing from
+                # one but a NACK: a peer that renamed after we wrote to it, which
+                # the engine reports (nack-from-another-nick) and never answers.
+                # Anything else, handed to the engine, would move irc-olm's
+                # routing hint (a pinned key speaking from here), and a KEYREQ
+                # would then get keys.
+                self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=unpinned-nick")
+                return
             self._hosts[_fold(nick)] = host
             self.dispatch(self.engine.receive(nick, body))
 
@@ -249,7 +253,13 @@ class Bridge:
             ch, res = self.engine.challenge(nick, network=self.network_token, channel=target,
                                             sender_mask=prefix, line=body.encode("utf-8"))
             self._held[ch.nonce] = _Held(target, nick, host, body, is_pm)
-            self.dispatch(res)
+            try:
+                self.dispatch(res)
+            except Exception as e:
+                # The CHAL could not be handed over (a dead pacer). The line
+                # still ends once, when its challenge expires (no-ack); raising
+                # would make the caller end it a second time.
+                self._emit("ERROR", "chal-send-fail", f"FROM={nick}", repr(e))
             self._emit("ORDER_HELD", f"FROM={nick}", f"HOST={host}", f"TO={target}",
                        f"LEN={len(body)}")
             return "held"
