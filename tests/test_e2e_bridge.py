@@ -201,10 +201,16 @@ class BridgeTest(unittest.TestCase):
         # nothing from vjt's key is taken as hers.
         self.h.say("ciao")                              # a session, as vjt
         self.h.say("sono lucy", sender="lucy")          # the same key, from nick lucy
-        self.assertEqual(self.h.bot.pinned("lucy").ed25519, self.h.vjt.fingerprint)  # the hint
         self.assertFalse(any("FROM=lucy" in m for m in self.h.msgs()))
-        self.assertTrue(any(e.startswith("E2E_DROPPED FROM=lucy") and "REASON=not-the-pinned-key" in e
-                            for e in self.h.events))
+        self.assertIn(f"E2E_DROPPED FROM=lucy HOST={HOST} REASON=unpinned-nick", self.h.events)
+        # never handed to the engine, so its routing hint never moved there:
+        # a KEYREQ from lucy gets no keys, and burns no one-time key
+        self.assertIsNone(self.h.bot.pinned("lucy"))
+        self.h.to_vjt.clear()
+        fresh = self.h._engine("lucy2", pins={BOT: self.h.bot.fingerprint})
+        self.h.bridge.on_e2e_line("lucy", HOST, BOT,
+                                  fresh.send(BOT, {"t": "text", "body": "x"}).outbound[0][1])
+        self.assertEqual(self.h.to_vjt, [])
         self.assertFalse(any(e.startswith("E2E_KEY_ALARM FROM=lucy") for e in self.h.events))
         self.assertFalse(self.h.bridge.wants_encryption("lucy"))
         self.assertIsNone(self.h.gate("fammi un favore", target=BOT, nick="lucy"))
@@ -233,6 +239,14 @@ class BridgeTest(unittest.TestCase):
         self.h.pump(self.h.vjt.send(BOT, {"t": "ack", "nonce": chal["nonce"]}))
         self.assertIn(f"MSG TRUSTED CONFIRMED=1 FROM=vjt HOST={HOST} TO={BOT} BODY=in chiaro",
                       self.h.events)
+        self.assertFalse(self.h.bridge.wants_encryption("vjt"))
+
+    def test_a_plaintext_pm_released_trusted_after_the_pin_went_switches_the_reply_back(self):
+        self.h.say("ciao")
+        self.h.write_pins("")
+        self.h.bridge.tick()
+        self.assertTrue(self.h.bridge.wants_encryption("vjt"))
+        self.assertIsNone(self.h.gate("in chiaro", target=BOT))      # layer 1: TRUSTED
         self.assertFalse(self.h.bridge.wants_encryption("vjt"))
 
     def test_an_unconfirmed_plaintext_pm_leaves_the_conversation_encrypted(self):
@@ -358,6 +372,10 @@ class BridgeTest(unittest.TestCase):
         self.h.bridge.send_text("vjt", "123456789", action=False, origin=None)
         self.assertEqual([line for line in self.h.logs if "E2E MSG to" in line][-1],
                          "> E2E MSG to vjt (9 bytes)")
+        self.h.bridge._submit = lambda outbound, urgent: list(dict.fromkeys(
+            (t, framing.parse(b).msgid) for t, b in outbound))   # room said yes, then refused
+        self.h.bridge.send_text("vjt", "987654321", action=False, origin=None)
+        self.assertEqual(len([line for line in self.h.logs if "E2E MSG to" in line]), 2)
 
     def test_a_challenge_nobody_sends_keys_for_is_no_lost_reply(self):
         # vjt has a pin and no session (cicchetto closed): the KEYREQ goes

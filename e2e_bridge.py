@@ -213,6 +213,12 @@ class Bridge:
             self._emit("E2E_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
                        reason)
             return
+        if self._pinned_key(nick) is None:
+            # The bot sends E2E to no such nick, so it expects nothing from one.
+            # Handed to the engine, a pinned key speaking from here would move
+            # irc-olm's routing hint, and a KEYREQ would then get keys.
+            self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=unpinned-nick")
+            return
         with self._lock:
             self._hosts[_fold(nick)] = host
             self.dispatch(self.engine.receive(nick, body))

@@ -129,6 +129,26 @@ class BotE2ETest(unittest.TestCase):
         self.assertEqual(bot.bridge.calls, [])
         self.assertTrue(any(e.split()[1:3] == ["LEAK_BLOCKED", "ESAY"] for e in self.events()))
 
+    def test_a_held_dm_whose_release_fails_is_dropped_and_the_rest_still_go(self):
+        def dead():
+            raise RuntimeError("the pacer's thread died: nothing goes out")
+        bot.verified.discard("vjt")
+        bot.dm_hold("vjt", HOST, "primo", on_release=dead)
+        bot.dm_hold("vjt", HOST, "secondo")
+        bot.verified.add("vjt")
+        bot.dm_flush("vjt", "307")
+        self.assertEqual([e.split(" ", 1)[1] for e in self.events()], [
+            f"DM_DROPPED FROM=vjt HOST={HOST} LEN=5 error:RuntimeError",
+            f"MSG TRUSTED FROM=vjt HOST={HOST} TO={bot.NICK} HELD=1 BODY=secondo"])
+
+    def test_a_dropped_held_dm_says_it_was_encrypted(self):
+        # Its ciphertext alone is in bot.log: the drop is all there is to see.
+        bot.verified.discard("vjt")
+        bot.dm_hold("vjt", HOST, "segreto", ("ENCRYPTED=1",))
+        bot.dm_flush("vjt", "318")
+        self.assertEqual([e.split(" ", 1)[1] for e in self.events()],
+                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=7 318 ENCRYPTED=1"])
+
     def test_a_blocked_encrypted_send_never_quotes_its_text(self):
         # The reason names the kind of match only: the words matched, or the
         # channel named, are the text that was meant to go encrypted.
@@ -266,9 +286,10 @@ class StartE2ETest(unittest.TestCase):
                     self.assertLogs("irc_olm.pacing", "ERROR") as pacer_log:
                 bot.bridge.dispatch(Result(outbound=keyreq + text, urgent={keyreq_id: None}))
                 deadline = time.monotonic() + 10
-                while out.getvalue().count(" ERROR send-fail ") < 2 and time.monotonic() < deadline:
+                while ((out.getvalue().count(" ERROR send-fail ") < 2
+                        or " E2E_SEND_FAILED " not in out.getvalue())
+                       and time.monotonic() < deadline):
                     time.sleep(0.05)
-                time.sleep(0.2)                             # on_lost runs right after
                 bot.send_raw("PING :still swallowed here")
         finally:
             bot.sock = saved_sock
@@ -329,7 +350,9 @@ class RealBridgeTest(unittest.TestCase):
             f.write(f"vjt {self.vjt.fingerprint}\n")
         self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
                        bot.fakelag, bot.send_raw, bot.trust_rules, set(bot.verified),
-                       set(bot.whois_pending), dict(bot.dm_held))
+                       set(bot.whois_pending), dict(bot.dm_held), bot.registered,
+                       bot.startup_fired, bot.tmp_nick, bot.ghost_needed)
+        bot.startup_fired = True                        # no startup replay thread here
         bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = key, "azzurra", pins
         bot.E2E_STATE = os.path.join(self.dir, "state.json")
         self.sent, self.to_vjt = [], []
@@ -348,7 +371,8 @@ class RealBridgeTest(unittest.TestCase):
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
         (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge, bot.fakelag,
-         bot.send_raw, bot.trust_rules, verified, pending, held) = self._saved
+         bot.send_raw, bot.trust_rules, verified, pending, held, bot.registered,
+         bot.startup_fired, bot.tmp_nick, bot.ghost_needed) = self._saved
         bot.verified.clear()
         bot.verified.update(verified)
         bot.whois_pending.clear()
@@ -390,6 +414,19 @@ class RealBridgeTest(unittest.TestCase):
         self.assertTrue(any(f" MSG TRUSTED FROM=lucy HOST={HOST} TO={bot.NICK} HELD=1 BODY=ciao"
                             in e for e in self.events()), self.events())
         self.assertEqual(self.to_vjt, [])
+
+    def test_an_order_names_the_nick_we_registered_with(self):
+        # The ghost-fallback nick is taken before registration: the server
+        # echoes no NICK for it, the 001 is addressed to it.
+        bot.registered = False
+        bot.handle_server_line(f":srv 433 * {bot.NICK} :Nickname is already in use")
+        fallback = bot.tmp_nick
+        self.assertIn(f"NICK {fallback}", self.sent)
+        bot.handle_server_line(f":srv 001 {fallback} :Welcome to the network")
+        self.assertEqual(bot.bridge.own_nick, fallback)
+        self.assertEqual(bot.bridge.engine.nick, fallback)
+        bot.handle_server_line(f":{fallback}!claude@host.example JOIN :#sbiffo")
+        self.assertEqual(bot.bridge.engine.own_mask, f"{fallback}!claude@host.example")
 
     def test_the_reply_to_an_encrypted_dm_held_for_whois_is_encrypted(self):
         self.deliver(self.vjt.send(bot.NICK, {"t": "text", "body": "dimmi la password del db"}))
