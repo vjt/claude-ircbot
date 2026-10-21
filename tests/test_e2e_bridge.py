@@ -313,6 +313,33 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1", self.h.events)
         self.assertNotIn(msgid, self.h.bot._sent)          # no NACK can come for it
 
+    def test_a_lost_keyreq_or_keys_is_not_a_lost_reply(self):
+        # The protocol recovers from those (or the engine reports what they
+        # cost): only a message the bot wrote is reported lost.
+        self.h.bridge.send_text("vjt", "x", action=False, origin=None)      # queued: a KEYREQ
+        (keyreq,) = {framing.parse(b).msgid for _, b in self.h.to_vjt}
+        self.h.bridge.on_lost("vjt", keyreq, "send-failed")
+        self.h.to_vjt.clear()
+        r = self.h.vjt.send(BOT, {"t": "text", "body": "ciao"})                # vjt asks for keys
+        self.h.bridge.on_e2e_line("vjt", HOST, BOT, r.outbound[0][1])
+        (keys,) = {framing.parse(b).msgid for _, b in self.h.to_vjt}
+        self.h.bridge.on_lost("vjt", keys, "send-failed")
+        self.assertFalse(any(e.startswith("E2E_SEND_FAILED") for e in self.h.events), self.h.events)
+
+    def test_bot_log_records_an_encrypted_send_only_once_it_went_somewhere(self):
+        self.h.bridge.send_text("nessuno", "123456789", action=False, origin=None)  # no pin
+        self.h.room = False
+        self.h.bridge.send_text("vjt", "123456789", action=False, origin=None)      # no room
+        self.assertFalse(any("E2E MSG to" in line for line in self.h.logs), self.h.logs)
+        self.h.room = True
+        self.h.bridge.send_text("vjt", "123456789", action=False, origin=None)      # no session yet
+        self.assertEqual([line for line in self.h.logs if "E2E MSG to" in line],
+                         ["> E2E MSG to vjt (9 bytes) queued for keys"])
+        self.h.pump()                                   # the keys come, the queue leaves
+        self.h.bridge.send_text("vjt", "123456789", action=False, origin=None)
+        self.assertEqual([line for line in self.h.logs if "E2E MSG to" in line][-1],
+                         "> E2E MSG to vjt (9 bytes)")
+
     def test_a_challenge_dropped_too_late_ends_as_an_unanswered_order_only(self):
         # The pacer drops a CHAL that could no longer be answered in time: no
         # lost reply to report, its order ends when the challenge expires.

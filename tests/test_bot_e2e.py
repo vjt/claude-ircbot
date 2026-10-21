@@ -219,14 +219,43 @@ class StartE2ETest(unittest.TestCase):
         finally:
             bot.sock = saved_sock
 
-    def test_what_the_pacer_loses_after_queueing_reaches_the_bridge(self):
-        events = self.start()
-        pacer = bot.bridge._submit.__self__                 # the PacedSender
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            pacer._on_lost("vjt", "AAAAAAAAAAA", "send-failed")
-        self.assertTrue(any(" E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1" in e
-                            for e in out.getvalue().splitlines()), events)
+    def test_a_text_message_a_failed_write_cuts_short_is_reported_lost(self):
+        # The real PacedSender from _start_e2e, writing into a dead socket: it
+        # must hear the failure (bot.py's own lines swallow it), and only a
+        # message the bot wrote is a lost reply, not a KEYREQ, KEYS or NACK.
+        import time
+        from irc_olm import framing
+        from irc_olm.engine import Result
+        self.start()
+
+        def message(verb):
+            msgid = framing.new_msgid()
+            return msgid, [("vjt", body) for body in framing.fragment(
+                verb, framing.encode_payload({"v": 1}), own_mask=f"{bot.NICK}!c@h",
+                target="vjt", msgid=msgid)]
+        keyreq_id, keyreq = message("KEYREQ")
+        _, text = message("MSG")
+
+        def dead(_, data):
+            raise BrokenPipeError(32, "Broken pipe")
+        saved_sock, out = bot.sock, io.StringIO()
+        bot.sock = type("Sock", (), {"sendall": dead})()
+        try:
+            with contextlib.redirect_stdout(out), \
+                    self.assertLogs("irc_olm.pacing", "ERROR") as pacer_log:
+                bot.bridge.dispatch(Result(outbound=keyreq + text, urgent={keyreq_id: None}))
+                deadline = time.monotonic() + 10
+                while out.getvalue().count(" ERROR send-fail ") < 2 and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                time.sleep(0.2)                             # on_lost runs right after
+                bot.send_raw("PING :still swallowed here")
+        finally:
+            bot.sock = saved_sock
+        self.assertEqual(len(pacer_log.records), 2)        # the pacer heard both failures
+        events = out.getvalue().splitlines()
+        self.assertEqual(sum(" ERROR send-fail " in e for e in events), 3, events)
+        self.assertEqual([e.split(" ", 1)[1] for e in events if " E2E_SEND_FAILED " in e],
+                         ["E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1"])
 
     def test_a_key_without_a_network_or_pins_fails_loudly(self):
         for missing in ("E2E_NETWORK", "E2E_PINS"):
