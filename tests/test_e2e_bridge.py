@@ -359,6 +359,17 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual([line for line in self.h.logs if "E2E MSG to" in line][-1],
                          "> E2E MSG to vjt (9 bytes)")
 
+    def test_a_challenge_nobody_sends_keys_for_is_no_lost_reply(self):
+        # vjt has a pin and no session (cicchetto closed): the KEYREQ goes
+        # unanswered, the order ends unanswered, and no reply was lost.
+        self.assertEqual(self.h.gate(f"{BOT}: riavvia il watchdog"), "held")
+        self.h.to_vjt.clear()                           # nobody answers the KEYREQ
+        for _ in range(61):
+            self.h.clock.t += 1
+            self.h.bridge.tick()
+        self.assertTrue(any(e.startswith("MSG UNTRUSTED WHY=no-ack") for e in self.h.events))
+        self.assertFalse(any(e.startswith("E2E_SEND_FAILED") for e in self.h.events), self.h.events)
+
     def test_a_challenge_dropped_too_late_ends_as_an_unanswered_order_only(self):
         # The pacer drops a CHAL that could no longer be answered in time: no
         # lost reply to report, its order ends when the challenge expires.
