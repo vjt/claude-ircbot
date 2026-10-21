@@ -415,16 +415,20 @@ def dm_reject_once(nick):
 # Nothing is ever lost forensically: the raw line is in bot.log either way, and
 # vjt can order it read from there.
 DM_HOLD_MAX = 5  # per nick, newest wins — a flood can't grow the queue
-dm_held: dict[str, list[tuple[str, str, tuple]]] = {}  # nick_lower -> [(host, body, extra)]
+dm_held: dict[str, list[tuple]] = {}  # nick_lower -> [(host, body, extra, on_release)]
 
 
-def dm_hold(nick, host, body, extra=()):
+def dm_hold(nick, host, body, extra=(), on_release=None):
     """Park a DM awaiting WHOIS. Returns the queue depth for the event line.
-    `extra` are fields for the MSG event (ENCRYPTED=1 ... from e2e_bridge)."""
+    `extra` are fields for the MSG event (ENCRYPTED=1 ... from e2e_bridge).
+    `on_release`, when given, runs once the WHOIS has verified the sender and
+    before the DM is released as TRUSTED; returning False takes the DM over
+    (e2e_bridge challenges a pinned user's plaintext PM, and releases or
+    drops it itself). It runs outside dm_lock."""
     n = nick.lower()
     with dm_lock:
         q = dm_held.setdefault(n, [])
-        q.append((host, body, tuple(extra)))
+        q.append((host, body, tuple(extra), on_release))
         del q[:-DM_HOLD_MAX]
         return len(q)
 
@@ -435,8 +439,10 @@ def dm_flush(nick, reason):
     n = nick.lower()
     with dm_lock:
         queued = dm_held.pop(n, [])
-    for host, body, extra in queued:
+    for host, body, extra, on_release in queued:
         if n in verified and host_matches(n, host):
+            if on_release is not None and not on_release():
+                continue
             emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                  f"TO={NICK}", "HELD=1", f"BODY={body}")
         else:
@@ -1013,7 +1019,11 @@ def handle_server_line(line):
             # else (host-mismatch: a squatter on a listed nick) will never become
             # trusted, so drop it now and rebound the notice.
             if reason == "pending-whois":
-                depth = dm_hold(nick, host, body)
+                # A pinned user's PM still needs its challenge once verified
+                # (e2e_bridge): layer 1 alone never releases it.
+                def release():
+                    return bridge.gate_plaintext(nick, host, prefix, target, body, True) != "held"
+                depth = dm_hold(nick, host, body, on_release=release if bridge else None)
                 emit("DM_HELD", f"FROM={nick}", f"HOST={host}",
                      f"LEN={len(body)}", f"QUEUED={depth}")
             else:

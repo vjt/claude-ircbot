@@ -233,8 +233,12 @@ text alone no longer counts for them:
   stream; so is a pinned key speaking under a nick pinned to another key.
 
 `ESAY <nick> <text>` / `EACT <nick> <text>` send encrypted (queries only, never
-a channel), and a `SAY`/`ACT` to a nick whose last DM was encrypted is
-encrypted too. A message that cannot be delivered is `E2E_SEND_FAILED` with a
+a channel). A `SAY`/`ACT` to a nick is encrypted too while the last DM from
+that nick released as TRUSTED was encrypted, for an hour after it and only
+until the bot restarts. A plaintext PM switches it back only once it is
+released as TRUSTED (for a user with a pinned key, confirmed); one held or
+dropped changes nothing. Answer `ENCRYPTED=1` with `ESAY`/`EACT`, which do not
+depend on it. A message that cannot be delivered is `E2E_SEND_FAILED` with a
 reason; `REASON=pacer-full` means the pacer has no room, and nothing was
 sent: 32 messages already wait for that nick (counting the ones refused behind
 them), or the 480 s of queued encrypted text all nicks share is full.

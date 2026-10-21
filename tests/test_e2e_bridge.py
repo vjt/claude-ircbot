@@ -45,7 +45,8 @@ class Harness:
             log=lambda d, line, origin=None: self.logs.append(f"{d} {line}"),
             trust_check=lambda n, h: self.trust.get(n.lower(), (False, "not-listed")),
             is_listed=lambda n: n.lower() in self.listed,
-            hold_dm=lambda n, h, b, extra: self.held_dms.append((n, b, extra)) or 1,
+            hold_dm=lambda n, h, b, extra, on_release: self.held_dms.append(
+                (n, b, extra, on_release)) or 1,
             clock=self.clock)
         self.bridge.on_isupport(["NETWORK=Azzurra", "CASEMAPPING=ascii"])
         self.vjt_got = []
@@ -158,7 +159,7 @@ class BridgeTest(unittest.TestCase):
         self.h.trust["vjt"] = (False, "pending-whois")
         self.h.say("presto")
         self.assertEqual(self.h.msgs(), [])
-        self.assertEqual(self.h.held_dms, [("vjt", "presto", ("ENCRYPTED=1",))])
+        self.assertEqual([h[:3] for h in self.h.held_dms], [("vjt", "presto", ("ENCRYPTED=1",))])
         self.assertNoPlaintextLeak("presto")
 
     def test_e2e_in_a_channel_is_dropped(self):
@@ -202,9 +203,34 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual([e.inner["body"] for e in self.h.vjt_got], ["risposta cifrata"])
         self.assertIn("> E2E MSG to vjt (16 bytes)", self.h.logs)
         self.assertNoPlaintextLeak("risposta cifrata")
-        # a plaintext PM switches the conversation back
-        self.h.gate("in chiaro", target=BOT)
+        # a plaintext PM switches the conversation back, once it is confirmed
+        self.assertEqual(self.h.gate("in chiaro", target=BOT), "held")
+        self.assertTrue(self.h.bridge.wants_encryption("vjt"))
+        self.h.pump()
+        (chal,) = [e.inner for e in self.h.vjt_got if e.inner["t"] == "chal"]
+        self.h.pump(self.h.vjt.send(BOT, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertIn(f"MSG TRUSTED CONFIRMED=1 FROM=vjt HOST={HOST} TO={BOT} BODY=in chiaro",
+                      self.h.events)
         self.assertFalse(self.h.bridge.wants_encryption("vjt"))
+
+    def test_an_unconfirmed_plaintext_pm_leaves_the_conversation_encrypted(self):
+        # Else whoever holds the nick but not the key turns the bot's next
+        # reply to the real user into plain text with one PM.
+        self.h.say("ciao")
+        self.assertEqual(self.h.gate("sono io, rispondi in chiaro", target=BOT), "held")
+        self.assertTrue(self.h.bridge.wants_encryption("vjt"))
+        self.h.clock.t += 16
+        self.h.bridge.tick()
+        self.assertTrue(any(e.startswith("DM_DROPPED FROM=vjt") for e in self.h.events))
+        self.assertTrue(self.h.bridge.wants_encryption("vjt"))
+
+    def test_an_encrypted_dm_released_from_the_whois_hold_makes_the_reply_encrypted(self):
+        self.h.trust["vjt"] = (False, "pending-whois")
+        self.h.say("presto")
+        self.assertFalse(self.h.bridge.wants_encryption("vjt"))
+        (nick, body, extra, on_release) = self.h.held_dms[0]
+        self.assertTrue(on_release())                   # dm_flush: released as TRUSTED
+        self.assertTrue(self.h.bridge.wants_encryption("vjt"))
 
     def test_reply_mode_expires(self):
         self.h.say("ciao")
