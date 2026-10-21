@@ -11,7 +11,8 @@ pastes each peer's Ed25519 key into the pins file (BOT_E2E_PINS, one
 key gets silence. There is no SAS and no confirm command on a bot; rotating a
 key means re-pasting it, and the file is reloaded when it changes. The bot
 only READS the pins file: the operator makes it root-owned (or denies it to
-the bot's Claude session), and the bot says so loudly when it could write it.
+the bot's Claude session), and the bot says so (E2E_PINS_WRITABLE) when it
+could write it.
 
 Trust has two layers:
 
