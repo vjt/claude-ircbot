@@ -433,6 +433,14 @@ class BridgeTest(unittest.TestCase):
 
     # --- server facts -------------------------------------------------------------
 
+    def test_after_our_own_nick_change_the_bot_answers_to_the_new_nick(self):
+        self.h.bridge.on_own_nick(f"{BOT}_")
+        self.assertEqual(self.h.gate(f"{BOT}_: riavvia"), "held")
+        self.assertEqual(self.h.gate(f"{BOT}: riavvia"), "unchallenged")
+        self.h.say("ciao")
+        self.assertTrue(self.h.msgs()[-1].startswith(f"MSG TRUSTED ENCRYPTED=1 FROM=vjt HOST={HOST} "
+                                                     f"TO={BOT}_ "), self.h.msgs())
+
     def test_our_own_nick_change_moves_the_mask_the_chunks_are_sized_for(self):
         self.h.bridge.on_own_mask(f"{BOT}!claude@host.example")
         self.h.bridge.on_own_nick("vjt-claude-longer-nick")
@@ -454,6 +462,20 @@ class BridgeTest(unittest.TestCase):
         self.h.bridge.tick()
         self.assertEqual(self.h.bot.pinned("vjt").ed25519, self.h.vjt.fingerprint)
         self.assertTrue(any(e.startswith("E2E_PINS_ERROR") for e in self.h.events))
+
+    def test_a_pins_file_that_stops_being_utf8_keeps_the_pins_and_says_so(self):
+        with open(self.h.pins_path, "wb") as f:
+            f.write(f"vjt {self.h.vjt.fingerprint}\n# caf\xe9\n".encode("latin-1"))
+        self.h.bridge.tick()
+        self.assertEqual(self.h.bot.pinned("vjt").ed25519, self.h.vjt.fingerprint)
+        (err,) = [e for e in self.h.events if e.startswith("E2E_PINS_ERROR")]
+        self.assertIn("not UTF-8", err)
+
+    def test_a_pins_file_that_is_not_utf8_is_refused_at_startup(self):
+        with open(self.h.pins_path, "wb") as f:
+            f.write(f"vjt {self.h.vjt.fingerprint}\n# caf\xe9\n".encode("latin-1"))
+        with self.assertRaisesRegex(e2e_bridge.PinsError, "not UTF-8"):
+            e2e_bridge.PinsFile(self.h.pins_path, self.h.emit).load()
 
     def test_a_pins_file_the_bot_could_rewrite_is_announced(self):
         # In a temp dir we own it: exactly the case the operator must fix.

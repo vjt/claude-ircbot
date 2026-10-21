@@ -95,9 +95,17 @@ class PinsFile:
     def load(self) -> dict[str, str]:
         """The first load, at startup: a missing or broken file raises."""
         self._sig = self._stat()
-        pins = load_pins(self.path)
+        pins = self._read()
         self._loaded(pins)
         return pins
+
+    def _read(self) -> dict[str, str]:
+        try:
+            return load_pins(self.path)
+        except UnicodeDecodeError as e:
+            # A PinsError like any broken file, without the repr that quotes
+            # the whole file.
+            raise PinsError(f"{self.path}: not UTF-8 (byte {e.start})") from None
 
     def reload_if_changed(self) -> dict[str, str] | None:
         """The new pins when the file changed and parses, else None. A broken
@@ -107,7 +115,7 @@ class PinsFile:
             if sig == self._sig:
                 return None
             self._sig = sig
-            pins = load_pins(self.path)
+            pins = self._read()
         except (OSError, PinsError) as e:
             if str(e) != self._error:
                 self._error = str(e)
@@ -149,8 +157,14 @@ class Bridge:
         # plaintexts for.
         self._text: OrderedDict[str, None] = OrderedDict()
         self._hosts: dict[str, str] = {}
+        self._set_own_nick(own_nick)
+
+    def _set_own_nick(self, nick: str) -> None:
+        """The nick a line must name to be addressed to us, and the TO= of an
+        encrypted DM."""
+        self.own_nick = nick
         self._addressed = re.compile(
-            r"(?<![A-Za-z0-9\[\]\\`^{}|_-])" + re.escape(own_nick) + r"(?![A-Za-z0-9\[\]\\`^{}|_-])",
+            r"(?<![A-Za-z0-9\[\]\\`^{}|_-])" + re.escape(nick) + r"(?![A-Za-z0-9\[\]\\`^{}|_-])",
             re.IGNORECASE)
 
     @staticmethod
@@ -172,8 +186,10 @@ class Bridge:
         self.engine.set_own_mask(mask)
 
     def on_own_nick(self, nick: str) -> None:
-        """Our own NICK change: the receivers now see a different mask."""
+        """Our own NICK change: the receivers now see a different mask, and
+        an order now names the new nick."""
         with self._lock:
+            self._set_own_nick(nick)
             self.engine.nick = nick
             mask = self.engine.own_mask
             if mask and "!" in mask:

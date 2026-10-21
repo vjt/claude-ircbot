@@ -1160,16 +1160,21 @@ def writer_loop():
                     run_cmd(line)
 
 
+def _e2e_bound(verb, target):
+    """Whether a FIFO command's text is meant to go encrypted: ESAY/EACT, or
+    a SAY/ACT the conversation's reply mode encrypts (e2e_bridge)."""
+    return verb in E2E_VERBS or (
+        verb in ("SAY", "ACT") and bridge is not None
+        and not target.startswith(("#", "&")) and bridge.wants_encryption(target))
+
+
 def _redacted(line):
     """`line` as the event stream may show it. A command bound for an E2E
     query keeps its verb and target, never its text: encrypting it would be
     pointless if a failure echoed it in clear to bot.stdout.log."""
     verb, _, rest = line.partition(" ")
     target, _, text = rest.partition(" ")
-    base = verb.partition(":")[0].upper()
-    encrypted = base in E2E_VERBS or (
-        base in ("SAY", "ACT") and bridge is not None
-        and not target.startswith(("#", "&")) and bridge.wants_encryption(target))
+    encrypted = _e2e_bound(verb.partition(":")[0].upper(), target)
     return f"{verb} {target} [{len(text.encode())} bytes]" if encrypted else line
 
 
@@ -1204,6 +1209,9 @@ def outbound_ok(verb, rest, origin):
         return True
     reason = leak_guard.check(target, text, dm_ok=is_trust_listed(target))
     if reason:
+        if _e2e_bound(verb, target):
+            # The kind of match only: what follows it quotes the text.
+            reason = reason.split(":", 1)[0]
         log("!", f"LEAK_BLOCKED {verb} {target} {reason}", origin)
         emit("LEAK_BLOCKED", verb, f"TO={target}", reason, f"LEN={len(text)}")
         return False
