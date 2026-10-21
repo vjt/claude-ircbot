@@ -486,17 +486,21 @@ def send_raw(s, origin=None):
 
 
 def _paced_write(target, body):
-    """The E2E pacer's writer: its lines are charged to the bank already."""
-    _write(f"PRIVMSG {target} :{body}", None)
+    """The E2E pacer's writer: its lines are charged to the bank already. A
+    failed write raises, so the pacer drops the rest of that message and
+    reports it lost (e2e_bridge.on_lost)."""
+    _write(f"PRIVMSG {target} :{body}", None, raising=True)
 
 
-def _write(s, origin):
+def _write(s, origin, raising=False):
     log(">", s, origin)
     with send_lock:
         try:
             sock.sendall((s + "\r\n").encode("utf-8", errors="replace"))
         except Exception as e:
             emit("ERROR", "send-fail", repr(e))
+            if raising:
+                raise
 
 
 def split_say(target, text, origin=None):
