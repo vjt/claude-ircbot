@@ -38,11 +38,12 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from irc_olm import framing
-from irc_olm.engine import (AckOk, AckRejected, ChallengeExpired, Dropped, KeyAlarm, Received,
-                            Rekeying, Replayed, SendFailed, Undecryptable)
+from irc_olm.engine import (SENT_MAX, AckOk, AckRejected, ChallengeExpired, Dropped, KeyAlarm,
+                            Received, Rekeying, Replayed, SendFailed, SendQueued, Undecryptable)
 from irc_olm.pins import PinsError, load_pins, pins_writable
 
 # How long a conversation stays "encrypted" for replies after the last
@@ -143,6 +144,10 @@ class Bridge:
         self.network_token = ""          # 005 NETWORK=, the CHAL `network` field
         self._held: dict[str, _Held] = {}
         self._reply_mode: dict[str, float] = {}
+        # The text messages handed to the pacer (msgids): the only ones whose
+        # loss after queueing is a lost reply. As many as the engine keeps
+        # plaintexts for.
+        self._text: OrderedDict[str, None] = OrderedDict()
         self._hosts: dict[str, str] = {}
         self._addressed = re.compile(
             r"(?<![A-Za-z0-9\[\]\\`^{}|_-])" + re.escape(own_nick) + r"(?![A-Za-z0-9\[\]\\`^{}|_-])",
@@ -238,8 +243,6 @@ class Bridge:
 
     def send_text(self, nick: str, text: str, *, action: bool, origin) -> None:
         with self._lock:
-            self._log(">", f"E2E {'ACT' if action else 'MSG'} to {nick} ({len(text.encode())} bytes)",
-                      origin)
             if self._pinned_key(nick) is None:
                 # E2E goes only to a nick the operator pinned, never to where
                 # irc-olm last heard a pinned key (engine.pinned's hint).
@@ -250,8 +253,13 @@ class Bridge:
                 # the same, and the receiver would skip its key.
                 self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
                 return
-            self.dispatch(self.engine.send(nick, {"t": "action" if action else "text",
-                                                  "body": text}))
+            res = self.engine.send(nick, {"t": "action" if action else "text", "body": text})
+            # bot.log says what became of it, never the text.
+            line = f"E2E {'ACT' if action else 'MSG'} to {nick} ({len(text.encode())} bytes)"
+            if self.dispatch(res):
+                self._log(">", line, origin)
+            elif any(isinstance(e, SendQueued) for e in res.events):
+                self._log(">", f"{line} queued for keys", origin)
 
     # --- time ------------------------------------------------------------------------
 
@@ -265,7 +273,9 @@ class Bridge:
 
     # --- events ------------------------------------------------------------------------
 
-    def dispatch(self, result) -> None:
+    def dispatch(self, result) -> set[str]:
+        """Hand an engine Result to the pacer and its events to the stream.
+        Returns the msgids of the text messages the pacer took."""
         refused = self._submit(result.outbound, result.urgent) if result.outbound else []
         # Never left: no NACK can come for them, and each is a message lost.
         # A refused challenge is not: its order ends as an unanswered one.
@@ -273,19 +283,30 @@ class Bridge:
         for nick, msgid in refused:
             if msgid not in result.urgent:
                 self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
+        # Everything but text is urgent: KEYREQ, KEYS, NACK, CHAL and ACK.
+        taken = ({framing.parse(body).msgid for _, body in result.outbound}
+                 - result.urgent.keys() - {msgid for _, msgid in refused})
+        for msgid in taken:
+            self._text[msgid] = None
+        while len(self._text) > SENT_MAX:
+            self._text.popitem(last=False)
         for e in result.events:
             self._on_event(e)
+        return taken
 
     def on_lost(self, nick: str, msgid: str | None, reason: str) -> None:
         """irc-olm PacedSender's on_lost, on the pacer's thread: a message
         lost after it was queued. "late" is a challenge that could no longer
         be answered in time (its order ends as an unanswered one, like any
         expired challenge); "send-failed" is a message a line of which failed
-        to write, the rest dropped: a lost reply."""
+        to write, the rest dropped. Only a text message is a lost reply: a
+        KEYREQ, KEYS or NACK is the protocol's to recover (or the engine
+        reports what it cost), a CHAL ends as an unanswered order."""
         with self._lock:
             if msgid is not None:
                 self.engine.discard([msgid])
-            if reason != "late":
+            if msgid in self._text:
+                del self._text[msgid]
                 self._emit("E2E_SEND_FAILED", f"TO={nick}", f"REASON={reason}", "LOST=1")
 
     def _on_event(self, e) -> None:
