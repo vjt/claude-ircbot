@@ -415,8 +415,9 @@ def dm_reject_once(nick):
 # until the WHOIS answers: 307/330 releases it as TRUSTED, 318-without-307 drops
 # it. Holding rather than dropping outright is what keeps the FIRST DM from a
 # genuinely trusted nick (vjt's own, right after a reconnect) from vanishing.
-# Nothing is ever lost forensically: the raw line is in bot.log either way, and
-# vjt can order it read from there.
+# Nothing plaintext is lost forensically: the raw line is in bot.log either
+# way, and vjt can order it read from there. An ENCRYPTED=1 DM is not: bot.log
+# has its ciphertext only, so one dropped here is gone.
 DM_HOLD_MAX = 5  # per nick, newest wins — a flood can't grow the queue
 dm_held: dict[str, list[tuple]] = {}  # nick_lower -> [(host, body, extra, on_release)]
 
@@ -444,13 +445,20 @@ def dm_flush(nick, reason):
         queued = dm_held.pop(n, [])
     for host, body, extra, on_release in queued:
         if n in verified and host_matches(n, host):
-            if on_release is not None and not on_release():
+            try:
+                if on_release is not None and not on_release():
+                    continue
+            except Exception as e:
+                # Each DM is popped already: one that fails must not take the
+                # rest of the queue with it.
+                emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
+                     f"error:{type(e).__name__}", *extra)
                 continue
             emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                  f"TO={NICK}", "HELD=1", f"BODY={body}")
         else:
             emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}",
-                 f"LEN={len(body)}", reason)
+                 f"LEN={len(body)}", reason, *extra)
 
 
 def trust_reset(nick, reason):
@@ -848,6 +856,10 @@ def handle_server_line(line):
     if cmd == "001":
         registered = True
         emit("CONNECTED", NICK)
+        if bridge and rest:
+            # The nick we registered with: a ghost fallback taken before 001
+            # gets no NICK echo (e2e_bridge: what an order must name).
+            bridge.on_own_nick(rest.split()[0])
         for tn, _ in trust_rules:
             whois_pending.add(tn)
             send_raw(f"WHOIS {tn}")
@@ -1063,7 +1075,7 @@ def handle_server_line(line):
             _arm_idle(target)
         return
     if cmd == "JOIN":
-        if bridge and nick.lower() == NICK.lower():
+        if bridge and _is_me(nick):
             # Our own full mask, as receivers see it: sizes the E2E chunks.
             bridge.on_own_mask(prefix)
         emit("JOIN", nick, f"HOST={host}", rest.lstrip(":"))
