@@ -129,6 +129,27 @@ class BotE2ETest(unittest.TestCase):
         self.assertEqual(bot.bridge.calls, [])
         self.assertTrue(any(e.split()[1:3] == ["LEAK_BLOCKED", "ESAY"] for e in self.events()))
 
+    def test_a_blocked_encrypted_send_never_quotes_its_text(self):
+        # The reason names the kind of match only: the words matched, or the
+        # channel named, are the text that was meant to go encrypted.
+        bot.bridge = FakeBridge(encrypt_to={"zed"})
+        bot.leak_guard.record("#it-opers", "ci vediamo a roma in via tal dei mille alle nove")
+        bot.run_cmd("ESAY stranger ci vediamo a roma in via tal dei mille")
+        bot.run_cmd("SAY zed ci vediamo a roma in via tal dei mille")      # an encrypted reply
+        bot.run_cmd("EACT stranger guarda #it-opers")
+        blocked = [e for e in self.events() if " LEAK_BLOCKED " in e]
+        self.assertEqual([e.split()[2:5] for e in blocked], [
+            ["ESAY", "TO=stranger", "words"], ["SAY", "TO=zed", "words"],
+            ["EACT", "TO=stranger", "name"]])
+        with open(bot.LOG) as f:
+            logged = [line for line in f if "LEAK_BLOCKED" in line]
+        for text in ("roma", "#it-opers"):
+            self.assertFalse(any(text in line for line in blocked + logged), (text, logged))
+        self.assertEqual(bot.bridge.calls, [])
+        # in plain text the reason stays whole, as before
+        bot.run_cmd("SAY #sbiffo guarda #it-opers")
+        self.assertIn("name:#it-opers", self.events()[-1])
+
     # --- inbound routing ---------------------------------------------------------------
 
     def test_e2e_lines_go_to_the_bridge_and_never_become_ctcp(self):
