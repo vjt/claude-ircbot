@@ -218,7 +218,8 @@ Setting it up, once per instance:
    it) and `BOT_E2E_PINS` in the unit's environment. The bot refuses to start
    with the key and without the other two. The state goes to
    `$XDG_STATE_HOME/claude-ircbot/<network id>.e2e.json`
-   (`~/.local/state/claude-ircbot/…` when that is unset), one per instance;
+   (`~/.local/state/claude-ircbot/…` when that is unset), one per network id
+   (two instances on one network need different ids, or `BOT_E2E_STATE`);
    `BOT_E2E_STATE` moves it, and must then name a different file for each
    instance.
 5. **Out of the session's reach.** The unit is a systemd user unit, so the
@@ -228,10 +229,11 @@ Setting it up, once per instance:
    of its own to a pinned key: its messages would then arrive as
    `MSG TRUSTED ENCRYPTED=1` from that key's user. Without the key it can
    still edit the state's clear part, the replay protection among it. So
-   either run the bot as a user of its own (the key and the state then
-   belong to that user), or deny the key file and the state directory to
-   that session in its permission rules, as for the pins file. The bot can
-   check neither.
+   deny the key file and the state directory to that session in its
+   permission rules, as for the pins file; the bot cannot check this.
+   Running the bot as a user of its own is not enough as things stand: the
+   bot creates its FIFO mode 600, so the session could no longer send it
+   commands.
 
 At startup the bot emits `E2E_READY KEY=<its own key> NETWORK=<id>`: that key
 is what the other side pastes. `python -m irc_olm identity --state <state file>`
