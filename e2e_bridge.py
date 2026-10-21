@@ -292,24 +292,27 @@ class Bridge:
 
     def dispatch(self, result) -> set[str]:
         """Hand an engine Result to the pacer and its events to the stream.
-        Returns the msgids of the text messages the pacer took."""
-        refused = self._submit(result.outbound, result.urgent) if result.outbound else []
-        # Never left: no NACK can come for them, and each is a message lost.
-        # A refused challenge is not: its order ends as an unanswered one.
-        self.engine.discard([msgid for _, msgid in refused])
-        for nick, msgid in refused:
-            if msgid not in result.urgent:
-                self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
-        # Everything but text is urgent: KEYREQ, KEYS, NACK, CHAL and ACK.
-        taken = ({framing.parse(body).msgid for _, body in result.outbound}
-                 - result.urgent.keys() - {msgid for _, msgid in refused})
-        for msgid in taken:
-            self._text[msgid] = None
-        while len(self._text) > SENT_MAX:
-            self._text.popitem(last=False)
-        for e in result.events:
-            self._on_event(e)
-        return taken
+        Returns the msgids of the text messages the pacer took. Under the
+        lock throughout: on_lost, on the pacer's thread, may come for a
+        message before it is recorded as text below."""
+        with self._lock:
+            refused = self._submit(result.outbound, result.urgent) if result.outbound else []
+            # Never left: no NACK can come for them, and each is a message lost.
+            # A refused challenge is not: its order ends as an unanswered one.
+            self.engine.discard([msgid for _, msgid in refused])
+            for nick, msgid in refused:
+                if msgid not in result.urgent:
+                    self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
+            # Everything but text is urgent: KEYREQ, KEYS, NACK, CHAL and ACK.
+            taken = ({framing.parse(body).msgid for _, body in result.outbound}
+                     - result.urgent.keys() - {msgid for _, msgid in refused})
+            for msgid in taken:
+                self._text[msgid] = None
+            while len(self._text) > SENT_MAX:
+                self._text.popitem(last=False)
+            for e in result.events:
+                self._on_event(e)
+            return taken
 
     def on_lost(self, nick: str, msgid: str | None, reason: str) -> None:
         """irc-olm PacedSender's on_lost, on the pacer's thread: a message
