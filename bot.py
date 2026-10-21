@@ -154,6 +154,7 @@ startup_fired = False
 registered = False      # True once we've received 001 (registration complete)
 ghost_needed = False    # True while we hold a temp nick and still want NICK back
 tmp_nick = None         # the throwaway nick we fell back to
+me = NICK               # the nick the server knows us by: 001's <me>, then our own NICK echoes
 
 # Trust state: nick must be in trust_rules, host must match the nick's glob,
 # AND we must have received RPL_WHOISREGNICK (307) confirming the nick is
@@ -433,6 +434,9 @@ def dm_hold(nick, host, body, extra=(), on_release=None):
     with dm_lock:
         q = dm_held.setdefault(n, [])
         q.append((host, body, tuple(extra), on_release))
+        for old_host, old_body, old_extra, _ in q[:-DM_HOLD_MAX]:
+            emit("DM_DROPPED", f"FROM={nick}", f"HOST={old_host}", f"LEN={len(old_body)}",
+                 "evicted", *old_extra)
         del q[:-DM_HOLD_MAX]
         return len(q)
 
@@ -831,7 +835,7 @@ def _reclaim_after_ghost():
 
 
 def handle_server_line(line):
-    global registered, ghost_needed, tmp_nick
+    global registered, ghost_needed, tmp_nick, me
     log("<", line)
     if line.startswith("PING "):
         send_raw("PONG " + line[5:])
@@ -856,10 +860,12 @@ def handle_server_line(line):
     if cmd == "001":
         registered = True
         emit("CONNECTED", NICK)
+        if rest:
+            me = rest.split()[0]
         if bridge and rest:
             # The nick we registered with: a ghost fallback taken before 001
             # gets no NICK echo (e2e_bridge: what an order must name).
-            bridge.on_own_nick(rest.split()[0])
+            bridge.on_own_nick(me)
         for tn, _ in trust_rules:
             whois_pending.add(tn)
             send_raw(f"WHOIS {tn}")
@@ -1075,7 +1081,7 @@ def handle_server_line(line):
             _arm_idle(target)
         return
     if cmd == "JOIN":
-        if bridge and _is_me(nick):
+        if bridge and nick.lower() == me.lower():
             # Our own full mask, as receivers see it: sizes the E2E chunks.
             bridge.on_own_mask(prefix)
         emit("JOIN", nick, f"HOST={host}", rest.lstrip(":"))
@@ -1096,10 +1102,12 @@ def handle_server_line(line):
         return
     if cmd == "NICK":
         new_nick = rest.lstrip(":")
-        if bridge and nick.lower() in (NICK.lower(), (tmp_nick or "").lower()):
-            # Ours: the receivers now see another mask, and the E2E chunk
-            # budget is sized for it.
-            bridge.on_own_nick(new_nick)
+        if nick.lower() == me.lower():
+            me = new_nick
+            if bridge:
+                # Ours: the receivers now see another mask, and the E2E chunk
+                # budget is sized for it.
+                bridge.on_own_nick(new_nick)
         emit("NICK_CHANGE", nick, f"HOST={host}", new_nick)
         trust_reset(nick, "nick-change")
         if ghost_needed and new_nick.lower() == NICK.lower():
