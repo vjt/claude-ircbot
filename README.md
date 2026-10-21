@@ -66,7 +66,7 @@ environment-overridable, which is what makes a second instance possible
 | `BOT_E2E_KEY` | unset (E2E off) | Olm pickle key, see [encrypted queries](#end-to-end-encrypted-queries-optional) |
 | `BOT_E2E_NETWORK` | unset | network id the Olm state is bound to (required with the key) |
 | `BOT_E2E_PINS` | unset | the operator's pinned keys (required with the key) |
-| `BOT_E2E_STATE` | `bot.e2e.state.json` | Olm account and sessions, mode 600 |
+| `BOT_E2E_STATE` | `~/.local/state/claude-ircbot/<network>.e2e.json` | Olm account and sessions, mode 600 |
 
 Timestamps in `bot.log` and on the event stream are `Europe/Rome` wall
 clock regardless of the host TZ.
@@ -191,8 +191,12 @@ Setting it up, once per instance:
 1. A venv with irc-olm, since the system python stays dependency-free:
    `python3 -m venv /opt/vjt-claude-e2e && /opt/vjt-claude-e2e/bin/pip install -r requirements-e2e.txt`,
    and run `bot.py` with that interpreter.
-2. A key, outside the repo: `python -m irc_olm keygen /etc/vjt-claude/azzurra.key`.
-   It encrypts every secret in the state file; losing it means a new identity,
+2. A key, outside the repo, made by the user the bot runs as: the bot refuses
+   a key file group or others can read, so it must be that user's own. As
+   that user, with the venv's python (the system one has no irc-olm):
+   `mkdir -p -m 700 ~/.config/vjt-claude && /opt/vjt-claude-e2e/bin/python -m irc_olm keygen ~/.config/vjt-claude/azzurra.key`.
+   Made by root it would be root's, and the bot could not read it. It
+   encrypts every secret in the state file; losing it means a new identity,
    and every peer has to paste the new key.
 3. The pins file, one `<nick> <ed25519 key>` per line, the key exactly as the
    peer's client shows it (cicchetto shows its own; 43 characters):
@@ -207,10 +211,27 @@ Setting it up, once per instance:
    root-owned in a root-owned directory (the bot user reads it, nobody else
    writes it), or deny it in that session's permission rules. The bot cannot
    enforce this: it emits `E2E_PINS_WRITABLE` at every load when it could
-   write the file.
-4. `BOT_E2E_KEY`, `BOT_E2E_NETWORK` (a fixed id such as `azzurra`: the state
-   file is bound to it) and `BOT_E2E_PINS` in the unit's environment. The bot
-   refuses to start with the key and without the other two.
+   write the file, for the operator in `bot.stdout.log` (the Monitor does not
+   wake on it: with deny rules it is expected at every start).
+4. `BOT_E2E_KEY`, `BOT_E2E_NETWORK` (a fixed id such as `azzurra`, of letters,
+   digits, `.`, `_` and `-`: the state file is bound to it, and named after
+   it) and `BOT_E2E_PINS` in the unit's environment. The bot refuses to start
+   with the key and without the other two. The state goes to
+   `$XDG_STATE_HOME/claude-ircbot/<network id>.e2e.json`
+   (`~/.local/state/claude-ircbot/…` when that is unset), one per instance;
+   `BOT_E2E_STATE` moves it, and must then name a different file for each
+   instance.
+5. **Out of the session's reach.** The unit is a systemd user unit, so the
+   bot runs as the same user as its Claude session, and that session can
+   read the key and rewrite the state file, wherever they are. With the key
+   it could rewrite the encrypted part of the state too, and bind a session
+   of its own to a pinned key: its messages would then arrive as
+   `MSG TRUSTED ENCRYPTED=1` from that key's user. Without the key it can
+   still edit the state's clear part, the replay protection among it. So
+   either run the bot as a user of its own (the key and the state then
+   belong to that user), or deny the key file and the state directory to
+   that session in its permission rules, as for the pins file. The bot can
+   check neither.
 
 At startup the bot emits `E2E_READY KEY=<its own key> NETWORK=<id>`: that key
 is what the other side pastes. `python -m irc_olm identity --state <state file>`

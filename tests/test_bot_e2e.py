@@ -278,6 +278,28 @@ class StartE2ETest(unittest.TestCase):
         self.assertEqual([e.split(" ", 1)[1] for e in events if " E2E_SEND_FAILED " in e],
                          ["E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1"])
 
+    def test_the_state_defaults_outside_the_repo_one_file_per_network(self):
+        # Not in the repo, the bot's Claude session's working tree, and not
+        # one file two instances could share.
+        import stat
+        from unittest import mock
+        bot.E2E_STATE = ""
+        xdg = os.path.join(self.dir, "xdg")
+        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": xdg}):
+            self.start()
+        state = os.path.join(xdg, "claude-ircbot", "azzurra.e2e.json")
+        self.assertEqual(str(bot.bridge.engine.state_path), state)
+        self.assertTrue(os.path.exists(state))
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(state)).st_mode), 0o700)
+
+    def test_a_network_id_that_cannot_name_a_file_is_refused(self):
+        for network in ("../azzurra", "azzurra/x", "az zurra", ""):
+            with self.subTest(network=network):
+                bot.E2E_NETWORK, bot.bridge = network, None
+                with self.assertRaises(ValueError):
+                    self.start()
+                self.assertIsNone(bot.bridge)
+
     def test_a_key_without_a_network_or_pins_fails_loudly(self):
         for missing in ("E2E_NETWORK", "E2E_PINS"):
             with self.subTest(missing=missing):

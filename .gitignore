@@ -100,9 +100,15 @@ suore_*.log
 reserved_recent.tsv
 reserved_recent.tsv.tmp
 
-# E2E (e2e_bridge.py): the Olm state is a secret, per instance. The key and
-# the pins file belong outside the repo; the pattern catches a misplaced one.
+# E2E (e2e_bridge.py): the key, the Olm state and the pins file are per
+# instance and belong outside the repo (README); these catch a misplaced one
+# under the README's names, the state's interrupted-save temp file included.
+*.key
+*.pins
+*.e2e.json
+.*.e2e.json.*
 bot.e2e*
+.bot.e2e*
 
 # Sonic petition (firma_counter.py, second instance): private state + log
 sonic_state.json
