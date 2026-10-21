@@ -128,7 +128,7 @@ class Bridge:
         self._log = log                  # (direction, line, origin)
         self._trust_check = trust_check
         self._is_listed = is_listed
-        self._hold_dm = hold_dm          # (nick, host, body, extra_fields) -> depth
+        self._hold_dm = hold_dm          # (nick, host, body, extra_fields, on_release) -> depth
         self._clock = clock
         self._lock = threading.RLock()
         self.network_token = ""          # 005 NETWORK=, the CHAL `network` field
@@ -198,9 +198,12 @@ class Bridge:
         longer counts."""
         is_pm = not target.startswith(("#", "&"))
         with self._lock:
-            if is_pm:
-                self._reply_mode.pop(_fold(nick), None)
-            if not trusted or self.engine.pinned(nick) is None:
+            if not trusted:
+                return None
+            if self.engine.pinned(nick) is None:
+                if is_pm:
+                    # Released TRUSTED in plain text: so is the reply.
+                    self._reply_mode.pop(_fold(nick), None)
                 return None
             if not (is_pm or self._addressed.search(body)):
                 return "unchallenged"
@@ -309,7 +312,8 @@ class Bridge:
         trusted, reason = self._trust_check(nick, host)
         if not trusted:
             if reason == "pending-whois":
-                depth = self._hold_dm(nick, host, body, tuple(extra))
+                depth = self._hold_dm(nick, host, body, tuple(extra),
+                                      lambda: self._encrypted_dm_released(nick))
                 self._emit("DM_HELD", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
                            f"QUEUED={depth}", "ENCRYPTED=1")
             else:
@@ -320,10 +324,23 @@ class Bridge:
         self._emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                    f"TO={self.own_nick}", f"BODY={body}")
 
+    def _encrypted_dm_released(self, nick: str) -> bool:
+        """bot.py's dm_flush is about to release a held encrypted DM as
+        TRUSTED: the reply to it is encrypted too, as on the direct path."""
+        with self._lock:
+            self._reply_mode[_fold(nick)] = self._clock()
+        return True
+
     def _release(self, nonce: str, *, confirmed: bool, why: str = "") -> None:
         h = self._held.pop(nonce, None)
         if h is None:
             return
+        if confirmed and h.is_pm:
+            # A plaintext PM confirmed from the session: the conversation is
+            # in plain text now, and so is the reply. An unconfirmed one
+            # changes nothing, or holding the nick would be enough to turn
+            # the reply to the real user into plain text.
+            self._reply_mode.pop(_fold(h.nick), None)
         if confirmed:
             self._emit("MSG", "TRUSTED", "CONFIRMED=1", f"FROM={h.nick}", f"HOST={h.host}",
                        f"TO={h.target}", f"BODY={h.body}")
