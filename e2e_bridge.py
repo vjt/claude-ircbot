@@ -59,6 +59,7 @@ class _Held:
     host: str
     body: str
     is_pm: bool
+    own_nick: str        # ours when it was challenged: the nick the line named
 
 
 def _fold(nick: str) -> str:
@@ -148,7 +149,7 @@ class Bridge:
         self._trust_check = trust_check
         self._is_listed = is_listed
         self._hold_dm = hold_dm          # (nick, host, body, extra_fields, on_release) -> depth
-        self._on_confirmed = on_confirmed  # (nick, target, body): a line its ACK released TRUSTED
+        self._on_confirmed = on_confirmed  # (nick, target, body, own_nick): a line its ACK released TRUSTED
         self._clock = clock
         self._lock = threading.RLock()
         self.network_token = ""          # 005 NETWORK=, the CHAL `network` field
@@ -253,7 +254,7 @@ class Bridge:
             # still pinned here, so challenge() cannot raise NotPinnedError.
             ch, res = self.engine.challenge(nick, network=self.network_token, channel=target,
                                             sender_mask=prefix, line=body.encode("utf-8"))
-            self._held[ch.nonce] = _Held(target, nick, host, body, is_pm)
+            self._held[ch.nonce] = _Held(target, nick, host, body, is_pm, self.own_nick)
             try:
                 self.dispatch(res)
             except Exception as e:
@@ -425,7 +426,7 @@ class Bridge:
         if confirmed:
             self._emit("MSG", "TRUSTED", "CONFIRMED=1", f"FROM={h.nick}", f"HOST={h.host}",
                        f"TO={h.target}", f"BODY={h.body}")
-            self._on_confirmed(h.nick, h.target, h.body)
+            self._on_confirmed(h.nick, h.target, h.body, h.own_nick)
         elif h.is_pm:
             self._emit("DM_DROPPED", f"FROM={h.nick}", f"HOST={h.host}", f"LEN={len(h.body)}",
                        why)
