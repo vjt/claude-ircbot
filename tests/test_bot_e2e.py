@@ -55,8 +55,9 @@ class BotE2ETest(unittest.TestCase):
         self.sent = []
         self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified),
                        dict(bot.dm_held), set(bot.whois_pending), bot.dm_allow_rules,
-                       bot.usage_reply)
+                       bot.usage_reply, bot.me)
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
+        bot.me = bot.NICK                           # a test may rename us
         bot.trust_rules = [("vjt", "*.openssl.it")]
         bot.verified.clear()
         bot.verified.add("vjt")
@@ -72,7 +73,7 @@ class BotE2ETest(unittest.TestCase):
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
         (bot.send_raw, bot.bridge, bot.trust_rules, verified, held, pending, bot.dm_allow_rules,
-         bot.usage_reply) = self._saved
+         bot.usage_reply, bot.me) = self._saved
         bot.verified.clear()
         bot.verified.update(verified)
         bot.dm_held.clear()
@@ -238,6 +239,20 @@ class BotE2ETest(unittest.TestCase):
         bot.bridge = None
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
         self.assertEqual(self.answered(), ["#sbiffo"])
+
+    def test_a_bot_command_addressed_to_the_bot_is_answered(self):
+        bot.bridge = None
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}: !bolletta")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me.upper()}, !token")
+        self.assertEqual(self.answered(), ["#sbiffo", "#sbiffo"])
+
+    def test_a_bot_command_addressed_elsewhere_or_with_more_text_is_not_one(self):
+        bot.bridge = None
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :lucy: !bolletta")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}: !bolletta adesso")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}x: !bolletta")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :lucy, {bot.me}: !bolletta")
+        self.assertEqual(self.answered(), [])
 
     def test_a_bot_command_shown_unchallenged_is_not_answered(self):
         bot.bridge = FakeBridge(verdict="unchallenged")
@@ -429,6 +444,7 @@ class RealBridgeTest(unittest.TestCase):
                        bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me,
                        bot.dm_allow_rules, bot.usage_reply)
         bot.startup_fired = True                        # no startup replay thread here
+        bot.me = bot.NICK                               # the nick the bridge is built with
         bot.dm_allow_rules = []
         self.replies = []
         bot.usage_reply = self.replies.append           # nothing is fetched
@@ -572,6 +588,19 @@ class RealBridgeTest(unittest.TestCase):
         (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
         self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
         self.assertEqual(self.answered(), ["vjt"])
+
+    def test_a_pinned_users_addressed_bot_command_is_answered_in_the_channel_once_confirmed(self):
+        from irc_olm.engine import Result
+        self.verify("vjt")
+        now = bot.bridge.engine._clock()
+        bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.NICK}: !bolletta")
+        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        self.assertEqual(self.answered(), [])
+        self.deliver(Result())                          # the CHAL reaches vjt's client
+        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
+        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertEqual(self.answered(), ["#sbiffo"])
 
     def test_a_dmallowed_pinned_users_pm_is_challenged_like_any_other(self):
         bot.dm_allow_rules = [("vjt", "*.openssl.it")]

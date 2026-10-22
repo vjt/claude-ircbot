@@ -614,13 +614,25 @@ def usage_reply(target):
     emit("BOLLETTA", f"TO={target}", line)
 
 
+def bot_command(body):
+    """The command a line carries, lowercased: the whole line, or what
+    follows our nick at its start (`<nick>: !bolletta`, `<nick>, !bolletta`).
+    The addressed form is how a user with a pinned key gets the line
+    challenged in a channel (e2e_bridge)."""
+    text = body.strip()
+    m = re.match(re.escape(me) + r"[:,]?\s*", text, re.IGNORECASE)
+    if m:
+        text = text[m.end():]
+    return text.lower()
+
+
 def on_trusted_line(nick, target, body):
     """A plaintext line just reached the stream as TRUSTED: straight away,
     released from its WHOIS hold, or confirmed by the ACK of its challenge
     (e2e_bridge). The bot's own commands answer here and nowhere else, so
     they follow the verdict the event line carries. An encrypted DM never
     comes here: the answer would go out in clear."""
-    if body.strip().lower() in USAGE_CMDS:
+    if bot_command(body) in USAGE_CMDS:
         reply_to = target if target.startswith(("#", "&")) else nick
         threading.Thread(target=usage_reply, args=(reply_to,), daemon=True).start()
 
