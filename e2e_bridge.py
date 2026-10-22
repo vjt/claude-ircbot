@@ -137,7 +137,7 @@ class PinsFile:
 
 class Bridge:
     def __init__(self, engine, *, own_nick, pins, submit, room, emit, log, trust_check,
-                 is_listed, hold_dm, clock=time.monotonic):
+                 is_listed, hold_dm, on_confirmed, clock=time.monotonic):
         self.engine = engine
         self.own_nick = own_nick
         self._pins = pins                # PinsFile
@@ -148,6 +148,7 @@ class Bridge:
         self._trust_check = trust_check
         self._is_listed = is_listed
         self._hold_dm = hold_dm          # (nick, host, body, extra_fields, on_release) -> depth
+        self._on_confirmed = on_confirmed  # (nick, target, body): a line its ACK released TRUSTED
         self._clock = clock
         self._lock = threading.RLock()
         self.network_token = ""          # 005 NETWORK=, the CHAL `network` field
@@ -424,6 +425,7 @@ class Bridge:
         if confirmed:
             self._emit("MSG", "TRUSTED", "CONFIRMED=1", f"FROM={h.nick}", f"HOST={h.host}",
                        f"TO={h.target}", f"BODY={h.body}")
+            self._on_confirmed(h.nick, h.target, h.body)
         elif h.is_pm:
             self._emit("DM_DROPPED", f"FROM={h.nick}", f"HOST={h.host}", f"LEN={len(h.body)}",
                        why)
