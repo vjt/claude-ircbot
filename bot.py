@@ -298,7 +298,9 @@ def load_trust():
 def load_dm_allow():
     """bot.dmallow: `nick host_glob` lines whose DMs get through as UNTRUSTED.
     Readable, never authoritative — the trust list stays the only authority
-    (vjt 2026-10-20, puppy: «allow sui suoi dm solo ma NON trusted»)."""
+    (vjt 2026-10-20, puppy: «allow sui suoi dm solo ma NON trusted»). It is
+    for nicks outside bot.trust: a listed nick's DMs take the trust path,
+    whatever bot.dmallow says."""
     global dm_allow_rules
     out = []
     try:
@@ -460,6 +462,8 @@ def dm_flush(nick, reason):
                 continue
             emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                  f"TO={NICK}", "HELD=1", f"BODY={body}")
+            if "ENCRYPTED=1" not in extra:
+                on_trusted_line(nick, NICK, body)
         else:
             emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}",
                  f"LEN={len(body)}", reason, *extra)
@@ -608,6 +612,17 @@ def usage_reply(target):
     line = usage_line()
     split_say(target, line, "bolletta")
     emit("BOLLETTA", f"TO={target}", line)
+
+
+def on_trusted_line(nick, target, body):
+    """A plaintext line just reached the stream as TRUSTED: straight away,
+    released from its WHOIS hold, or confirmed by the ACK of its challenge
+    (e2e_bridge). The bot's own commands answer here and nowhere else, so
+    they follow the verdict the event line carries. An encrypted DM never
+    comes here: the answer would go out in clear."""
+    if body.strip().lower() in USAGE_CMDS:
+        reply_to = target if target.startswith(("#", "&")) else nick
+        threading.Thread(target=usage_reply, args=(reply_to,), daemon=True).start()
 
 
 # DCC SEND. Serve a EliteWarez: il `!list` offre "warez", e prima o poi uno
@@ -1023,7 +1038,7 @@ def handle_server_line(line):
         # here. No BODY is emitted — the whole point is that the payload never
         # reaches the event stream (vjt 2026-08-03).
         is_dm = not target.startswith(("#", "&"))
-        if is_dm and dm_allowed(nick, host):
+        if is_dm and not is_trust_listed(nick) and dm_allowed(nick, host):
             emit("MSG", "UNTRUSTED", f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
             return
         if is_dm and dm_blocked(nick):
@@ -1072,9 +1087,8 @@ def handle_server_line(line):
         emit("MSG", trust, *extra, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
-        if trusted and body.strip().lower() in USAGE_CMDS:
-            reply_to = target if target.startswith(("#", "&")) else nick
-            threading.Thread(target=usage_reply, args=(reply_to,), daemon=True).start()
+        if trust == "TRUSTED":
+            on_trusted_line(nick, target, body)
         # Re-arm the idle timer only on HUMAN PRIVMSG to a tracked channel.
         # Our own outgoing messages don't reach this path.
         if target.startswith("#") and nick.lower() != NICK.lower():
@@ -1350,7 +1364,8 @@ def _start_e2e():
                         on_lost=lambda nick, msgid, reason: bridge.on_lost(nick, msgid, reason))
     bridge = e2e_bridge.Bridge(
         engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, room=pacer.room, emit=emit,
-        log=log, trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold)
+        log=log, trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold,
+        on_confirmed=on_trusted_line)
     emit("E2E_READY", f"KEY={engine.fingerprint}", f"NETWORK={E2E_NETWORK}")
 
 

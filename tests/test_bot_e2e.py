@@ -6,6 +6,7 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
 
 TMP = tempfile.mkdtemp()
@@ -53,26 +54,41 @@ class BotE2ETest(unittest.TestCase):
     def setUp(self):
         self.sent = []
         self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified),
-                       dict(bot.dm_held))
+                       dict(bot.dm_held), set(bot.whois_pending), bot.dm_allow_rules,
+                       bot.usage_reply)
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
         bot.trust_rules = [("vjt", "*.openssl.it")]
         bot.verified.clear()
         bot.verified.add("vjt")
         bot.dm_held.clear()
+        bot.dm_allow_rules = []
+        self.replies = []
+        bot.usage_reply = self.replies.append       # nothing is fetched
+        self.threads = set(threading.enumerate())
         self.out = io.StringIO()
         self._redirect = contextlib.redirect_stdout(self.out)
         self._redirect.__enter__()
 
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
-        bot.send_raw, bot.bridge, bot.trust_rules, verified, held = self._saved
+        (bot.send_raw, bot.bridge, bot.trust_rules, verified, held, pending, bot.dm_allow_rules,
+         bot.usage_reply) = self._saved
         bot.verified.clear()
         bot.verified.update(verified)
         bot.dm_held.clear()
         bot.dm_held.update(held)
+        bot.whois_pending.clear()
+        bot.whois_pending.update(pending)
 
     def events(self):
         return self.out.getvalue().splitlines()
+
+    def answered(self):
+        """Where the bot answered a command: usage_reply runs on a thread of
+        its own, joined here."""
+        for t in set(threading.enumerate()) - self.threads:
+            t.join(2)
+        return self.replies
 
     # --- FIFO commands --------------------------------------------------------------
 
@@ -215,6 +231,54 @@ class BotE2ETest(unittest.TestCase):
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :chiacchiere")
         self.assertTrue(any(f"MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST={HOST} TO=#sbiffo "
                             "BODY=chiacchiere" in e for e in self.events()))
+
+    # --- the bot's own commands and bot.dmallow, under the trust verdict --------------
+
+    def test_a_trusted_bot_command_is_answered(self):
+        bot.bridge = None
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
+        self.assertEqual(self.answered(), ["#sbiffo"])
+
+    def test_a_bot_command_shown_unchallenged_is_not_answered(self):
+        bot.bridge = FakeBridge(verdict="unchallenged")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
+        self.assertTrue(any(" MSG UNTRUSTED WHY=unchallenged FROM=vjt " in e
+                            for e in self.events()), self.events())
+        self.assertEqual(self.answered(), [])
+
+    def test_a_bot_command_held_for_whois_is_answered_once_verified(self):
+        bot.bridge = None
+        bot.verified.discard("vjt")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
+        self.assertEqual(self.answered(), [])
+        bot.handle_server_line(f":srv 307 {bot.NICK} vjt :has identified for this nick")
+        self.assertTrue(any(" MSG TRUSTED FROM=vjt " in e and " HELD=1 " in e
+                            for e in self.events()), self.events())
+        self.assertEqual(self.answered(), ["vjt"])
+
+    def test_a_held_encrypted_dm_is_not_a_bot_command(self):
+        # Its answer would go out in clear.
+        bot.verified.discard("vjt")
+        bot.dm_hold("vjt", HOST, "!bolletta", ("ENCRYPTED=1",), on_release=lambda: True)
+        bot.handle_server_line(f":srv 307 {bot.NICK} vjt :has identified for this nick")
+        self.assertTrue(any(" MSG TRUSTED ENCRYPTED=1 FROM=vjt " in e for e in self.events()),
+                        self.events())
+        self.assertEqual(self.answered(), [])
+
+    def test_a_dmallowed_stranger_still_gets_through_untrusted(self):
+        bot.bridge = None
+        bot.dm_allow_rules = [("puppy", "*.example.org")]
+        bot.handle_server_line(f":puppy!p@p.example.org PRIVMSG {bot.NICK} :ciao")
+        self.assertTrue(any(f" MSG UNTRUSTED FROM=puppy HOST=p.example.org TO={bot.NICK} BODY=ciao"
+                            in e for e in self.events()), self.events())
+
+    def test_a_listed_nick_takes_the_trust_path_whatever_dmallow_says(self):
+        bot.bridge = None
+        bot.dm_allow_rules = [("vjt", "*.openssl.it")]
+        bot.verified.discard("vjt")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :ciao")
+        self.assertTrue(any(" DM_HELD FROM=vjt " in e for e in self.events()), self.events())
+        self.assertFalse(any(" MSG " in e for e in self.events()), self.events())
 
 
 class StartE2ETest(unittest.TestCase):
@@ -362,11 +426,15 @@ class RealBridgeTest(unittest.TestCase):
         self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
                        bot.fakelag, bot.send_raw, bot.trust_rules, set(bot.verified),
                        set(bot.whois_pending), dict(bot.dm_held), bot.registered,
-                       bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me)
+                       bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me,
+                       bot.dm_allow_rules, bot.usage_reply)
         bot.startup_fired = True                        # no startup replay thread here
+        bot.dm_allow_rules = []
+        self.replies = []
+        bot.usage_reply = self.replies.append           # nothing is fetched
         bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = key, "azzurra", pins
         bot.E2E_STATE = os.path.join(self.dir, "state.json")
-        self.sent, self.to_vjt = [], []
+        self.sent, self.to_vjt, self.vjt_got = [], [], []
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
         bot.trust_rules = [("vjt", "*.openssl.it"), ("lucy", "*.openssl.it")]
         bot.verified.clear()
@@ -378,12 +446,14 @@ class RealBridgeTest(unittest.TestCase):
         bot._start_e2e()
         self.vjt.set_pins({bot.NICK: bot.bridge.engine.fingerprint})
         bot.bridge._submit = lambda outbound, urgent: self.to_vjt.extend(outbound) or []
+        self.threads = set(threading.enumerate())
 
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
         (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge, bot.fakelag,
          bot.send_raw, bot.trust_rules, verified, pending, held, bot.registered,
-         bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me) = self._saved
+         bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me, bot.dm_allow_rules,
+         bot.usage_reply) = self._saved
         bot.verified.clear()
         bot.verified.update(verified)
         bot.whois_pending.clear()
@@ -394,8 +464,16 @@ class RealBridgeTest(unittest.TestCase):
     def events(self):
         return self.out.getvalue().splitlines()
 
+    def answered(self):
+        """Where the bot answered a command: usage_reply runs on a thread of
+        its own, joined here."""
+        for t in set(threading.enumerate()) - self.threads:
+            t.join(2)
+        return self.replies
+
     def deliver(self, result):
         """The wire between vjt's engine and the bot, until it is quiet."""
+        from irc_olm.engine import Received
         pending = list(result.outbound)
         for _ in range(100):
             if pending:
@@ -403,7 +481,9 @@ class RealBridgeTest(unittest.TestCase):
                 bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :{body}")
             elif self.to_vjt:
                 _, body = self.to_vjt.pop(0)
-                pending += self.vjt.receive(bot.NICK, body).outbound
+                got = self.vjt.receive(bot.NICK, body)
+                self.vjt_got += [e.inner for e in got.events if isinstance(e, Received)]
+                pending += got.outbound
             else:
                 return
         raise AssertionError("wire never quiet")
@@ -463,6 +543,26 @@ class RealBridgeTest(unittest.TestCase):
         self.assertTrue(self.to_vjt)                    # it went encrypted
         with open(bot.LOG) as f:
             self.assertNotIn("hunter2", f.read())
+
+    def test_a_confirmed_bot_command_is_answered(self):
+        from irc_olm.engine import Result
+        self.verify("vjt")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
+        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        self.assertEqual(self.answered(), [])
+        self.deliver(Result())                          # the CHAL reaches vjt's client
+        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
+        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertTrue(any(" MSG TRUSTED CONFIRMED=1 FROM=vjt " in e and e.endswith("BODY=!bolletta")
+                            for e in self.events()), self.events())
+        self.assertEqual(self.answered(), ["vjt"])
+
+    def test_a_dmallowed_pinned_users_pm_is_challenged_like_any_other(self):
+        bot.dm_allow_rules = [("vjt", "*.openssl.it")]
+        self.verify("vjt")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #sbiffo")
+        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        self.assertFalse(any(" MSG " in e for e in self.events()), self.events())
 
 
 if __name__ == "__main__":
