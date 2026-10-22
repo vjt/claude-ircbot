@@ -61,6 +61,7 @@ environment-overridable, which is what makes a second instance possible
 | `BOT_LOG` | `bot.log` | raw traffic log, both directions |
 | `BOT_FIFO` | `bot.send` | command inbox |
 | `BOT_TRUST` | `bot.trust` | trust list (see below) |
+| `BOT_DM_ALLOW` | `bot.dmallow` | nicks outside the trust list whose private messages are shown, untrusted (see below) |
 | `BOT_ENV` | `.env` | NickServ password file |
 | `BOT_STARTUP` | `bot.startup` | post-auth command replay |
 | `BOT_E2E_KEY` | unset (E2E off) | Olm pickle key, see [encrypted queries](#end-to-end-encrypted-queries-optional) |
@@ -170,6 +171,11 @@ Example `bot.trust`:
 # <nick> <host_glob>
 vjt *.openssl.it
 ```
+
+`bot.dmallow`, in the same `<nick> <host_glob>` format, lets a nick outside
+`bot.trust` send private messages: they reach the stream as `MSG UNTRUSTED`,
+readable, never an order. It does not apply to a nick in `bot.trust`, whose
+private messages take the trust path above.
 
 ### End-to-end encrypted queries (optional)
 

@@ -547,6 +547,8 @@ class RealBridgeTest(unittest.TestCase):
     def test_a_confirmed_bot_command_is_answered(self):
         from irc_olm.engine import Result
         self.verify("vjt")
+        now = bot.bridge.engine._clock()
+        bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
         self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
@@ -555,6 +557,20 @@ class RealBridgeTest(unittest.TestCase):
         self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
         self.assertTrue(any(" MSG TRUSTED CONFIRMED=1 FROM=vjt " in e and e.endswith("BODY=!bolletta")
                             for e in self.events()), self.events())
+        self.assertEqual(self.answered(), ["vjt"])
+
+    def test_a_bot_command_held_for_whois_is_answered_only_once_confirmed(self):
+        from irc_olm.engine import Result
+        bot.verified.discard("vjt")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
+        now = bot.bridge.engine._clock()
+        bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
+        bot.handle_server_line(f":srv 307 {bot.NICK} vjt :has identified for this nick")
+        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        self.assertEqual(self.answered(), [])
+        self.deliver(Result())                          # the CHAL reaches vjt's client
+        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
+        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
         self.assertEqual(self.answered(), ["vjt"])
 
     def test_a_dmallowed_pinned_users_pm_is_challenged_like_any_other(self):
