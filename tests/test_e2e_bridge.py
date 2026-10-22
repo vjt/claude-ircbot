@@ -47,7 +47,7 @@ class Harness:
             is_listed=lambda n: n.lower() in self.listed,
             hold_dm=lambda n, h, b, extra, on_release: self.held_dms.append(
                 (n, b, extra, on_release)) or 1,
-            on_confirmed=lambda n, t, b: self.confirmed.append((n, t, b)),
+            on_confirmed=lambda n, t, b, own_nick: self.confirmed.append((n, t, b)),
             clock=self.clock)
         self.bridge.on_isupport(["NETWORK=Azzurra", "CASEMAPPING=ascii"])
         self.vjt_got = []
