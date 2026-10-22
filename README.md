@@ -157,9 +157,14 @@ Trust is the combination of three checks, ALL required:
    the result is cached, and the cache resets on `PART` / `QUIT` / `NICK`
    change.
 
-If any check fails, the message is still emitted as `MSG other <nick> ...`
-and a `TRUST_DENIED` line records the reason. `INVITE` auto-join is gated
-on the same check.
+If any check fails, a channel message is still emitted, as `MSG UNTRUSTED`,
+and for a listed nick a `TRUST_DENIED` line records the reason. A private
+message from a listed nick is emitted only once all three pass: it waits
+for the `WHOIS` (`DM_HELD`) and is dropped if that fails (`DM_DROPPED`), or
+at once if its host does not match the glob (`DM_BLOCKED`). A private
+message from a nick not listed is dropped at once (`DM_BLOCKED`), unless
+`bot.dmallow`, below, lets it through. A dropped message never shows its
+text. `INVITE` auto-join is gated on the same check.
 
 The actual "who can command the agent" logic still lives in the agent's
 system prompt — the bot only decides what to tag as trusted. The bot is
@@ -173,9 +178,10 @@ vjt *.openssl.it
 ```
 
 `bot.dmallow`, in the same `<nick> <host_glob>` format, lets a nick outside
-`bot.trust` send private messages: they reach the stream as `MSG UNTRUSTED`,
-readable, never an order. It does not apply to a nick in `bot.trust`, whose
-private messages take the trust path above.
+`bot.trust` send plaintext private messages from a host matching its glob:
+they reach the stream as `MSG UNTRUSTED`, readable, never an order. It does
+not apply to a nick in `bot.trust`, whose private messages take the trust
+path above.
 
 ### End-to-end encrypted queries (optional)
 
