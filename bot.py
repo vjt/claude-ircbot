@@ -463,7 +463,7 @@ def dm_flush(nick, reason):
             emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                  f"TO={NICK}", "HELD=1", f"BODY={body}")
             if "ENCRYPTED=1" not in extra:
-                on_trusted_line(nick, NICK, body)
+                on_trusted_line(nick, NICK, body, me)
         else:
             emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}",
                  f"LEN={len(body)}", reason, *extra)
@@ -614,25 +614,28 @@ def usage_reply(target):
     emit("BOLLETTA", f"TO={target}", line)
 
 
-def bot_command(body):
+def bot_command(body, own_nick):
     """The command a line carries, lowercased: the whole line, or what
-    follows our nick at its start (`<nick>: !bolletta`, `<nick>, !bolletta`).
-    The addressed form is how a user with a pinned key gets the line
-    challenged in a channel (e2e_bridge)."""
+    follows `own_nick` at its start, after an optional `:` or `,` and any
+    whitespace (`<nick>: !bolletta`, `<nick>, !bolletta`, `<nick> !bolletta`).
+    `own_nick` is ours when the line was said. The addressed form is how a
+    user with a pinned key gets the line challenged in a channel
+    (e2e_bridge)."""
     text = body.strip()
-    m = re.match(re.escape(me) + r"[:,]?\s*", text, re.IGNORECASE)
+    m = re.match(re.escape(own_nick) + r"[:,]?\s*", text, re.IGNORECASE)
     if m:
         text = text[m.end():]
     return text.lower()
 
 
-def on_trusted_line(nick, target, body):
+def on_trusted_line(nick, target, body, own_nick):
     """A plaintext line just reached the stream as TRUSTED: straight away,
     released from its WHOIS hold, or confirmed by the ACK of its challenge
     (e2e_bridge). The bot's own commands answer here and nowhere else, so
     they follow the verdict the event line carries. An encrypted DM never
-    comes here: the answer would go out in clear."""
-    if bot_command(body) in USAGE_CMDS:
+    comes here: the answer would go out in clear. `own_nick` is ours when
+    the line was said: a confirmed one may come after we renamed."""
+    if bot_command(body, own_nick) in USAGE_CMDS:
         reply_to = target if target.startswith(("#", "&")) else nick
         threading.Thread(target=usage_reply, args=(reply_to,), daemon=True).start()
 
@@ -1100,7 +1103,7 @@ def handle_server_line(line):
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
         if trust == "TRUSTED":
-            on_trusted_line(nick, target, body)
+            on_trusted_line(nick, target, body, me)
         # Re-arm the idle timer only on HUMAN PRIVMSG to a tracked channel.
         # Our own outgoing messages don't reach this path.
         if target.startswith("#") and nick.lower() != NICK.lower():

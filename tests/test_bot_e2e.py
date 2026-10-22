@@ -55,7 +55,7 @@ class BotE2ETest(unittest.TestCase):
         self.sent = []
         self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified),
                        dict(bot.dm_held), set(bot.whois_pending), bot.dm_allow_rules,
-                       bot.usage_reply, bot.me)
+                       bot.usage_reply, bot.me, set(bot.joined))
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
         bot.me = bot.NICK                           # a test may rename us
         bot.trust_rules = [("vjt", "*.openssl.it")]
@@ -73,7 +73,9 @@ class BotE2ETest(unittest.TestCase):
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
         (bot.send_raw, bot.bridge, bot.trust_rules, verified, held, pending, bot.dm_allow_rules,
-         bot.usage_reply, bot.me) = self._saved
+         bot.usage_reply, bot.me, joined) = self._saved
+        bot.joined.clear()
+        bot.joined.update(joined)
         bot.verified.clear()
         bot.verified.update(verified)
         bot.dm_held.clear()
@@ -253,6 +255,14 @@ class BotE2ETest(unittest.TestCase):
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}x: !bolletta")
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :lucy, {bot.me}: !bolletta")
         self.assertEqual(self.answered(), [])
+
+    def test_a_bot_command_addressed_to_the_nick_we_hold_now_is_answered(self):
+        bot.bridge = None
+        bot.handle_server_line(f":{bot.NICK}!c@host.example NICK :[c]laude|")   # ours
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #a : [c]laude|: !bolletta ")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #b :claude: !bolletta")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #c :{bot.NICK}: !bolletta")
+        self.assertEqual(self.answered(), ["#a"])
 
     def test_a_bot_command_shown_unchallenged_is_not_answered(self):
         bot.bridge = FakeBridge(verdict="unchallenged")
@@ -442,7 +452,7 @@ class RealBridgeTest(unittest.TestCase):
                        bot.fakelag, bot.send_raw, bot.trust_rules, set(bot.verified),
                        set(bot.whois_pending), dict(bot.dm_held), bot.registered,
                        bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me,
-                       bot.dm_allow_rules, bot.usage_reply)
+                       bot.dm_allow_rules, bot.usage_reply, set(bot.joined))
         bot.startup_fired = True                        # no startup replay thread here
         bot.me = bot.NICK                               # the nick the bridge is built with
         bot.dm_allow_rules = []
@@ -469,7 +479,9 @@ class RealBridgeTest(unittest.TestCase):
         (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge, bot.fakelag,
          bot.send_raw, bot.trust_rules, verified, pending, held, bot.registered,
          bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me, bot.dm_allow_rules,
-         bot.usage_reply) = self._saved
+         bot.usage_reply, joined) = self._saved
+        bot.joined.clear()
+        bot.joined.update(joined)
         bot.verified.clear()
         bot.verified.update(verified)
         bot.whois_pending.clear()
@@ -598,6 +610,18 @@ class RealBridgeTest(unittest.TestCase):
         self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
         self.deliver(Result())                          # the CHAL reaches vjt's client
+        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
+        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertEqual(self.answered(), ["#sbiffo"])
+
+    def test_an_addressed_bot_command_confirmed_after_we_renamed_is_answered(self):
+        from irc_olm.engine import Result
+        self.verify("vjt")
+        now = bot.bridge.engine._clock()
+        bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.NICK}: !bolletta")
+        self.deliver(Result())                          # the CHAL reaches vjt's client
+        bot.handle_server_line(f":{bot.NICK}!claude@host.example NICK :{bot.NICK}_")
         (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
         self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
         self.assertEqual(self.answered(), ["#sbiffo"])
