@@ -27,7 +27,7 @@ class Harness:
     def __init__(self):
         self.dir = tempfile.mkdtemp()
         self.clock = Clock()
-        self.events, self.logs, self.held_dms = [], [], []
+        self.events, self.logs, self.held_dms, self.confirmed = [], [], [], []
         self.listed = {"vjt", "lucy"}
         self.trust = {"vjt": (True, "ok"), "lucy": (True, "ok")}
         self.to_vjt = []
@@ -47,6 +47,7 @@ class Harness:
             is_listed=lambda n: n.lower() in self.listed,
             hold_dm=lambda n, h, b, extra, on_release: self.held_dms.append(
                 (n, b, extra, on_release)) or 1,
+            on_confirmed=lambda n, t, b: self.confirmed.append((n, t, b)),
             clock=self.clock)
         self.bridge.on_isupport(["NETWORK=Azzurra", "CASEMAPPING=ascii"])
         self.vjt_got = []
@@ -515,6 +516,19 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.h.msgs(), [])
         self.assertTrue(any(e.startswith("ORDER_ACK_REJECTED FROM=lucy") and "wrong-peer" in e
                             for e in self.h.events))
+
+    def test_only_a_confirmed_line_goes_to_the_bots_commands(self):
+        self.h.say("!bolletta")                         # encrypted: the stream's, not a command
+        self.assertEqual(self.h.gate("!bolletta"), "unchallenged")
+        self.assertEqual(self.h.gate(f"{BOT}: !bolletta"), "held")
+        self.h.pump()
+        (chal,) = [e.inner for e in self.h.vjt_got if e.inner["t"] == "chal"]
+        self.h.pump(self.h.vjt.send(BOT, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertEqual(self.h.confirmed, [("vjt", "#sbiffo", f"{BOT}: !bolletta")])
+        self.assertEqual(self.h.gate("!bolletta", target=BOT), "held")
+        self.h.clock.t += 16                            # never acked
+        self.h.bridge.tick()
+        self.assertEqual(self.h.confirmed, [("vjt", "#sbiffo", f"{BOT}: !bolletta")])
 
     def test_unaddressed_line_from_a_pinned_user_is_unchallenged(self):
         self.assertEqual(self.h.gate("chiacchiere"), "unchallenged")
