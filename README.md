@@ -191,9 +191,12 @@ cicchetto (Olm, through [irc-olm](https://github.com/vjt/irc-olm)): the ircd
 and any bouncer only relay ciphertext. Without the variable the bot never
 imports irc-olm and behaves exactly as before.
 
-**Keys are pinned, never learned.** The bot talks E2E only to the Ed25519 keys
+**Keys are pinned, never learned.** The bot talks E2E only to the master keys
 the operator pasted into the pins file, and an unknown key gets silence: no
-keys, no error, no session. There is no fingerprint comparison and no confirm
+keys, no error, no session. Each user has one master key per network, which
+vouches for the user's devices (1 to 4, wire v2): one pin covers all of them,
+and an encrypted message to the user goes to every device its master
+trusts. There is no fingerprint comparison and no confirm
 command on the bot (SAS is between humans, in cicchetto). Rotating a key means
 pasting the new one; the bot reloads the file when it changes, and keeps the
 previous pins if the new file does not parse.
@@ -210,8 +213,8 @@ Setting it up, once per instance:
    Made by root it would be root's, and the bot could not read it. It
    encrypts every secret in the state file; losing it means a new identity,
    and every peer has to paste the new key.
-3. The pins file, one `<nick> <ed25519 key>` per line, the key exactly as the
-   peer's client shows it (cicchetto shows its own; 43 characters):
+3. The pins file, one `<nick> <master key>` per line, the peer's master key
+   exactly as its client shows it (cicchetto shows its own; 43 characters):
 
    ```
    # /etc/vjt-claude/e2e.pins
@@ -247,9 +250,18 @@ Setting it up, once per instance:
    bot creates its FIFO mode 600, so the session could no longer send it
    commands.
 
-At startup the bot emits `E2E_READY KEY=<its own key> NETWORK=<id>`: that key
-is what the other side pastes. `python -m irc_olm identity --state <state file>`
-prints it too.
+At startup the bot emits `E2E_READY KEY=<its own master key> NETWORK=<id>`:
+that key is what the other side pastes. `python -m irc_olm identity --state
+<state file>` prints it too.
+
+**Upgrading from wire v1** is a flag day: v1 and v2 do not talk to each other,
+so upgrade a bot only once its peers' clients speak v2. irc-olm refuses a v1
+state file: the bot exits at startup with `FATAL` naming
+`StateMismatchError`, and the unit restarts into the same error until the
+file is moved away; then the bot starts a new identity. Every peer pastes the
+bot's new master key, and the operator replaces each peer's key in the pins
+file with its master key: a v1 key left there turns every message from that
+peer into `E2E_KEY_ALARM`.
 
 **Trust, with a pinned key.** Layer 1 (the trust list above) still applies to
 every line. A user whose nick has a pinned key gets a second layer, and plain
@@ -259,8 +271,12 @@ text alone no longer counts for them:
   `MSG TRUSTED ENCRYPTED=1 FROM=… BODY=…`.
 - A plaintext line addressed to the bot (its nick as a word) or a plaintext
   PM is held (`ORDER_HELD`), and a challenge goes out over the encrypted
-  session. Their client answers only if it sent exactly that line in the last
-  15 s, and only then is it released as `MSG TRUSTED CONFIRMED=1`. Without the
+  session, to each of their devices that has written to the bot on it (wire
+  v2 never sends one in a first message: until the device the user types on
+  has written to the bot, an order from it cannot be confirmed and ends as
+  unanswered). Their client answers
+  only if it sent exactly that line in the last 15 s, and only then is it
+  released as `MSG TRUSTED CONFIRMED=1`. Without the
   answer a channel line is released as `MSG UNTRUSTED WHY=no-ack` and a PM is
   dropped.
 - Any other plaintext line from them is `MSG UNTRUSTED WHY=unchallenged`.
