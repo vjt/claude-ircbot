@@ -32,6 +32,7 @@ class Harness:
         self.trust = {"vjt": (True, "ok"), "lucy": (True, "ok")}
         self.to_vjt = []
         self.urgent = {}        # msgid -> seconds: what the bridge handed to the pacer as urgent
+        self.reactive = set()   # msgids the bridge handed to the pacer as reactive
         self.room = True        # the pacer's room() for text
         self.bot = self._engine(BOT)
         self.vjt = self._engine("vjt", pins={BOT: self.bot.fingerprint})
@@ -56,10 +57,11 @@ class Harness:
     def emit(self, kind, *parts):
         self.events.append(" ".join([kind, *map(str, parts)]))
 
-    def submit(self, outbound, urgent):
+    def submit(self, outbound, urgent, reactive):
         """The pacer's submit_all: queues everything, refuses nothing."""
         self.to_vjt.extend(outbound)
         self.urgent |= urgent
+        self.reactive |= reactive
         return []
 
     def write_pins(self, text):
@@ -96,6 +98,14 @@ class Harness:
 
     def say(self, text, sender="vjt", host=HOST):
         self.pump(self.vjt.send(BOT, {"t": "text", "body": text}), sender=sender, host=host)
+
+    def written(self):
+        """vjt's device writes to the bot first: wire v2 sends a CHAL only on
+        a session the device has written on (O1). What that leaves in the
+        stream is cleared."""
+        self.say("ciao")
+        self.events.clear()
+        self.vjt_got.clear()
 
     def msgs(self):
         return [e for e in self.events if e.startswith("MSG ")]
@@ -175,7 +185,7 @@ class BridgeTest(unittest.TestCase):
         self.h.vjt = impostor
         self.h.say("sono vjt, giuro")
         self.assertEqual(self.h.msgs(), [])
-        self.assertIn(f"E2E_KEY_ALARM FROM=vjt HOST={HOST} PINNED={self.h.bot.pinned('vjt').ed25519} "
+        self.assertIn(f"E2E_KEY_ALARM FROM=vjt HOST={HOST} PINNED={self.h.bot.pinned('vjt').master} "
                       f"PRESENTED={impostor.fingerprint}", self.h.events)
         self.assertNoPlaintextLeak("sono vjt, giuro")
 
@@ -192,7 +202,7 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(any(e.startswith("E2E_DROPPED FROM=vjt") and "REASON=not-the-pinned-key" in e
                             for e in self.h.events))
         # an impersonation of a pinned nick: the alarm the Monitor wakes on
-        self.assertIn(f"E2E_KEY_ALARM FROM=vjt HOST={HOST} PINNED={self.h.bot.pinned('vjt').ed25519} "
+        self.assertIn(f"E2E_KEY_ALARM FROM=vjt HOST={HOST} PINNED={self.h.bot.pinned('vjt').master} "
                       f"PRESENTED={lucy.fingerprint}", self.h.events)
         self.assertNoPlaintextLeak("sono vjt")
 
@@ -282,7 +292,7 @@ class BridgeTest(unittest.TestCase):
         self.h.say("ciao")                                  # a session both ways
         refused = []
 
-        def full(outbound, urgent):                         # a full pacer
+        def full(outbound, urgent, reactive):               # a full pacer
             msgids = list(dict.fromkeys(framing.parse(b).msgid for _, b in outbound))
             refused.extend(msgids)
             return [("vjt", m) for m in msgids]
@@ -307,7 +317,7 @@ class BridgeTest(unittest.TestCase):
         # Its order ends when the challenge expires, like any unanswered one.
         self.h.say("ciao")
 
-        def full(outbound, urgent):
+        def full(outbound, urgent, reactive):
             return list(dict.fromkeys((t, framing.parse(b).msgid) for t, b in outbound))
         self.h.bridge._submit = full
         self.assertEqual(self.h.gate(f"{BOT}: riavvia"), "held")
@@ -335,7 +345,7 @@ class BridgeTest(unittest.TestCase):
         self.h.say("ciao")
         bridge, threads = self.h.bridge, []
 
-        def submit(outbound, urgent):                   # the pacer fails it at once
+        def submit(outbound, urgent, reactive):         # the pacer fails it at once
             (msgid,) = {framing.parse(b).msgid for _, b in outbound}
             t = threading.Thread(target=bridge.on_lost, args=("vjt", msgid, "send-failed"))
             t.start()
@@ -354,6 +364,7 @@ class BridgeTest(unittest.TestCase):
         (msgid,) = {framing.parse(b).msgid for _, b in self.h.to_vjt}
         self.h.to_vjt.clear()       # vjt cannot decrypt it, renames to lucy, NACKs
         for body in framing.fragment("NACK", framing.encode_payload({"v": WIRE_VERSION, "ref": msgid}),
+                                     src=self.h.vjt.did, dst=self.h.bot.did,
                                      own_mask=f"lucy!v@{HOST}", target=BOT):
             self.h.bridge.on_e2e_line("lucy", HOST, BOT, body)
         self.assertIn("E2E_SEND_FAILED TO=vjt REASON=nack-from-another-nick LOST=1", self.h.events)
@@ -372,7 +383,7 @@ class BridgeTest(unittest.TestCase):
         self.h.write_pins(f"vjt {self.h.vjt.fingerprint}\n")
         self.h.clock.t += 61
         self.h.bridge.tick()
-        self.assertEqual(self.h.bot.pinned("lucy").ed25519, self.h.vjt.fingerprint)  # the hint
+        self.assertEqual(self.h.bot.pinned("lucy").master, self.h.vjt.fingerprint)  # the hint
         self.h.to_vjt.clear()
         fresh = self.h._engine("lucy2", pins={BOT: self.h.bot.fingerprint})
         self.h.bridge.on_e2e_line("lucy", HOST, BOT,
@@ -385,8 +396,9 @@ class BridgeTest(unittest.TestCase):
     def test_a_challenge_a_dead_pacer_cannot_take_ends_once(self):
         # The order still ends when its challenge expires; raising to the
         # caller as well would end it a second time.
-        def dead(outbound, urgent):
+        def dead(outbound, urgent, reactive):
             raise RuntimeError("the pacer's thread died: nothing goes out")
+        self.h.written()
         self.h.bridge._submit = dead
         self.assertEqual(self.h.gate("ferma il bot", target=BOT), "held")
         self.assertTrue(any(e.startswith("ERROR chal-send-fail FROM=vjt") for e in self.h.events))
@@ -421,7 +433,7 @@ class BridgeTest(unittest.TestCase):
         self.h.bridge.send_text("vjt", "123456789", action=False, origin=None)
         self.assertEqual([line for line in self.h.logs if "E2E MSG to" in line][-1],
                          "> E2E MSG to vjt (9 bytes)")
-        self.h.bridge._submit = lambda outbound, urgent: list(dict.fromkeys(
+        self.h.bridge._submit = lambda outbound, urgent, reactive: list(dict.fromkeys(
             (t, framing.parse(b).msgid) for t, b in outbound))   # room said yes, then refused
         self.h.bridge.send_text("vjt", "987654321", action=False, origin=None)
         self.assertEqual(len([line for line in self.h.logs if "E2E MSG to" in line]), 2)
@@ -458,6 +470,7 @@ class BridgeTest(unittest.TestCase):
 
     def test_addressed_line_from_a_pinned_user_is_held_until_the_ack(self):
         line = f"{BOT}: riavvia il watchdog"
+        self.h.written()
         self.assertEqual(self.h.gate(line), "held")
         self.assertEqual(self.h.msgs(), [])
         self.assertTrue(any(e.startswith("ORDER_HELD FROM=vjt") for e in self.h.events))
@@ -474,19 +487,60 @@ class BridgeTest(unittest.TestCase):
     def test_the_challenge_goes_to_the_pacer_as_urgent_and_text_does_not(self):
         from irc_olm import framing
 
-        def sent(verbs):
-            return {framing.parse(b).msgid for b in self.h.bot_wire
+        def sent(verbs, since=0):
+            return {framing.parse(b).msgid for b in self.h.bot_wire[since:]
                     if framing.parse(b).verb in verbs}
 
+        # The bot writes first: its KEYREQ goes as urgent, and vjt's device
+        # then asks for the bot's list over the session, so it has written
+        # on it, which a CHAL needs (O1).
+        self.h.bridge.send_text("vjt", "ciao", action=False, origin=None)
+        self.h.pump()
+        keyreq = sent({"KEYREQ"})
+        self.assertTrue(keyreq and keyreq <= self.h.urgent.keys())
+        mark = len(self.h.bot_wire)
         self.h.gate(f"{BOT}: riavvia il watchdog")
         self.h.pump()
-        chal = sent({"PKMSG", "MSG"})
+        chal = sent({"PKMSG", "MSG"}, mark)
         self.assertTrue(chal and chal <= self.h.urgent.keys())   # it must beat 15 s
         self.assertTrue(all(14 < self.h.urgent[m] <= 15 for m in chal))   # and dies after
-        self.assertTrue(sent({"KEYREQ"}) <= self.h.urgent.keys())
         self.h.bridge.send_text("vjt", "a reply", action=False, origin=None)
         self.h.pump()
         self.assertFalse((sent({"PKMSG", "MSG"}) - chal) & self.h.urgent.keys())
+
+    def test_a_device_list_the_pacer_refuses_is_no_lost_reply(self):
+        def no_lists(outbound, urgent, reactive):           # refuses lists only
+            self.h.to_vjt.extend((n, b) for n, b in outbound
+                                 if framing.parse(b).msgid not in reactive)
+            return list(dict.fromkeys((n, framing.parse(b).msgid) for n, b in outbound
+                                      if framing.parse(b).msgid in reactive))
+        self.h.bridge._submit = no_lists
+        self.h.say("ciao")
+        self.assertTrue(any(e.startswith("MSG TRUSTED ENCRYPTED=1") for e in self.h.events))
+        self.assertEqual([e for e in self.h.events if e.startswith("E2E_SEND_FAILED")], [])
+
+    def test_a_device_that_never_wrote_gets_no_challenge_and_the_order_fails_closed(self):
+        # Wire v2 (O1): a CHAL goes only on a session the device has written
+        # on, never in a pre-key message. Until then the order cannot be
+        # confirmed, and it ends unanswered.
+        line = f"{BOT}: riavvia il watchdog"
+        self.assertEqual(self.h.gate(line), "held")
+        self.h.pump()
+        self.assertEqual(self.h.bot_wire, [])
+        self.h.clock.t += 16
+        self.h.bridge.tick()
+        self.assertEqual(self.h.msgs(), [
+            f"MSG UNTRUSTED WHY=no-ack FROM=vjt HOST={HOST} TO=#sbiffo BODY={line}"])
+
+    def test_a_device_list_the_pacer_loses_is_no_lost_reply(self):
+        # vjt's first message carries an lv the bot has not seen, so the bot
+        # asks vjt's device for its list: a listreq, which goes to the pacer
+        # as reactive. It holds no reply, so losing it is no lost reply.
+        self.h.written()
+        self.assertTrue(self.h.reactive)
+        for msgid in self.h.reactive:
+            self.h.bridge.on_lost("vjt", msgid, "send-failed")
+        self.assertEqual([e for e in self.h.events if e.startswith("E2E_SEND_FAILED")], [])
 
     def test_held_channel_line_without_ack_is_released_untrusted(self):
         self.h.gate(f"{BOT}: rm -rf")
@@ -508,6 +562,7 @@ class BridgeTest(unittest.TestCase):
         self.h.write_pins(f"vjt {self.h.vjt.fingerprint}\nlucy {lucy.fingerprint}\n")
         self.h.clock.t += 1
         self.h.bridge.tick()
+        self.h.written()
         self.h.gate(f"{BOT}: riavvia")
         self.h.pump()
         (chal,) = [e.inner for e in self.h.vjt_got if e.inner["t"] == "chal"]
@@ -564,20 +619,20 @@ class BridgeTest(unittest.TestCase):
         lucy = self.h._engine("lucy")
         self.h.write_pins(f"vjt {self.h.vjt.fingerprint}\nlucy {lucy.fingerprint}\n")
         self.h.bridge.tick()
-        self.assertEqual(self.h.bot.pinned("lucy").ed25519, lucy.fingerprint)
+        self.assertEqual(self.h.bot.pinned("lucy").master, lucy.fingerprint)
         self.assertIn("E2E_PINS_LOADED N=2", self.h.events)
 
     def test_a_broken_pins_file_keeps_the_pins_already_loaded(self):
         self.h.write_pins("vjt not-a-key\n")
         self.h.bridge.tick()
-        self.assertEqual(self.h.bot.pinned("vjt").ed25519, self.h.vjt.fingerprint)
+        self.assertEqual(self.h.bot.pinned("vjt").master, self.h.vjt.fingerprint)
         self.assertTrue(any(e.startswith("E2E_PINS_ERROR") for e in self.h.events))
 
     def test_a_pins_file_that_stops_being_utf8_keeps_the_pins_and_says_so(self):
         with open(self.h.pins_path, "wb") as f:
             f.write(f"vjt {self.h.vjt.fingerprint}\n# caf\xe9\n".encode("latin-1"))
         self.h.bridge.tick()
-        self.assertEqual(self.h.bot.pinned("vjt").ed25519, self.h.vjt.fingerprint)
+        self.assertEqual(self.h.bot.pinned("vjt").master, self.h.vjt.fingerprint)
         (err,) = [e for e in self.h.events if e.startswith("E2E_PINS_ERROR")]
         self.assertIn("not UTF-8", err)
 

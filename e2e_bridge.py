@@ -6,8 +6,11 @@ maps it onto bot.py: what reaches the event stream, under which trust verdict,
 and when an order needs a CHAL first.
 
 Keys are PINNED, never learned (vjt's final ruling, 2026-10-18): the operator
-pastes each peer's Ed25519 key into the pins file (BOT_E2E_PINS, one
-`<nick> <key>` per line) and the bot talks E2E only to those keys. An unknown
+pastes each peer's master key into the pins file (BOT_E2E_PINS, one
+`<nick> <key>` per line) and the bot talks E2E only to those keys. Wire v2
+(grappa-irc 2430) gives every user one master Ed25519 key per network, which
+vouches for the user's devices (1 to 4): one pin covers all of them, and
+irc-olm sends each message to every device the master trusts. An unknown
 key gets silence. There is no SAS and no confirm command on a bot; rotating a
 key means re-pasting it, and the file is reloaded when it changes. The bot
 only READS the pins file: the operator makes it root-owned (or denies it to
@@ -142,7 +145,9 @@ class Bridge:
         self.engine = engine
         self.own_nick = own_nick
         self._pins = pins                # PinsFile
-        self._submit = submit            # (outbound pairs, urgent msgid -> ttl) -> refused (nick, msgid), paced
+        # (outbound pairs, urgent msgid -> ttl, reactive msgids) -> refused
+        # (nick, msgid), paced
+        self._submit = submit
         self._room = room                # nick -> whether the pacer can take a text message
         self._emit = emit
         self._log = log                  # (direction, line, origin)
@@ -314,16 +319,20 @@ class Bridge:
         lock throughout: on_lost, on the pacer's thread, may come for a
         message before it is recorded as text below."""
         with self._lock:
-            refused = self._submit(result.outbound, result.urgent) if result.outbound else []
+            refused = (self._submit(result.outbound, result.urgent, result.reactive)
+                       if result.outbound else [])
             # Never left: no NACK can come for them, and each is a message lost.
             # A refused challenge is not: its order ends as an unanswered one.
+            # Nor is a refused device list: it holds no reply.
             self.engine.discard([msgid for _, msgid in refused])
             for nick, msgid in refused:
-                if msgid not in result.urgent:
+                if msgid not in result.urgent and msgid not in result.reactive:
                     self._emit("E2E_SEND_FAILED", f"TO={nick}", "REASON=pacer-full", "LOST=1")
-            # Everything but text is urgent: KEYREQ, KEYS, NACK, CHAL and ACK.
+            # Everything but text is urgent (KEYREQ, KEYS, NACK, CHAL and ACK)
+            # or reactive (a device list asked for, or sent on request).
             taken = ({framing.parse(body).msgid for _, body in result.outbound}
-                     - result.urgent.keys() - {msgid for _, msgid in refused})
+                     - result.urgent.keys() - result.reactive
+                     - {msgid for _, msgid in refused})
             for msgid in taken:
                 self._text[msgid] = None
             while len(self._text) > SENT_MAX:
@@ -379,14 +388,14 @@ class Bridge:
         nick, host = e.nick, self._hosts.get(_fold(e.nick), "")
         self._log("*", f"E2E MSG from {nick} ({len(body.encode())} bytes)", None)
         pinned = self._pinned_key(nick)
-        if pinned != e.peer.ed25519:
+        if pinned != e.peer.master:
             # A pinned key, but not this nick's: not this nick speaking.
             if pinned is not None:
                 # Under a nick pinned to another key: an impersonation, which
                 # is what the alarm is for. (Under a nick with no pin it is a
                 # renamed peer at most, and layer 1 is that nick's.)
                 self._emit("E2E_KEY_ALARM", f"FROM={nick}", f"HOST={host}", f"PINNED={pinned}",
-                           f"PRESENTED={e.peer.ed25519}")
+                           f"PRESENTED={e.peer.master}")
             self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=not-the-pinned-key",
                        f"LEN={len(body)}")
             return

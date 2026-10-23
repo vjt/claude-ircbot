@@ -341,7 +341,7 @@ class StartE2ETest(unittest.TestCase):
         (ready,) = [e for e in events if " E2E_READY " in e]
         self.assertIn(f"KEY={bot.bridge.engine.fingerprint}", ready)
         self.assertIn("NETWORK=azzurra", ready)
-        self.assertEqual(bot.bridge.engine.pinned("vjt").ed25519,
+        self.assertEqual(bot.bridge.engine.pinned("vjt").master,
                          "Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE")
 
     def test_every_line_the_bot_writes_is_charged_once_to_the_flood_bank(self):
@@ -372,8 +372,8 @@ class StartE2ETest(unittest.TestCase):
         def message(verb):
             msgid = framing.new_msgid()
             return msgid, [("vjt", body) for body in framing.fragment(
-                verb, framing.encode_payload({"v": 1}), own_mask=f"{bot.NICK}!c@h",
-                target="vjt", msgid=msgid)]
+                verb, framing.encode_payload({"v": 1}), src=bot.bridge.engine.did,
+                dst=framing.ANY, own_mask=f"{bot.NICK}!c@h", target="vjt", msgid=msgid)]
         keyreq_id, keyreq = message("KEYREQ")
         _, text = message("MSG")
 
@@ -471,7 +471,7 @@ class RealBridgeTest(unittest.TestCase):
         self._redirect.__enter__()
         bot._start_e2e()
         self.vjt.set_pins({bot.NICK: bot.bridge.engine.fingerprint})
-        bot.bridge._submit = lambda outbound, urgent: self.to_vjt.extend(outbound) or []
+        bot.bridge._submit = lambda outbound, urgent, reactive: self.to_vjt.extend(outbound) or []
         self.threads = set(threading.enumerate())
 
     def tearDown(self):
@@ -519,13 +519,23 @@ class RealBridgeTest(unittest.TestCase):
     def verify(self, nick):
         bot.handle_server_line(f":srv 307 {bot.NICK} {nick} :has identified for this nick")
 
+    def written(self):
+        """A session vjt's device has written on (wire v2 sends a CHAL only
+        there, O1): the bot writes first, and vjt's device asks for the bot's
+        device list over the session it opened. Nothing reaches the stream."""
+        from irc_olm.engine import Result
+        bot.bridge.send_text("vjt", "ciao", action=False, origin=None)
+        self.deliver(Result())
+        self.vjt_got.clear()
+
     def test_a_pinned_users_plaintext_pm_held_for_whois_is_challenged_once_verified(self):
+        self.written()
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #sbiffo")
         self.assertIn("WHOIS vjt", self.sent)
         self.verify("vjt")
         self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
         self.assertFalse(any(" MSG TRUSTED " in e for e in self.events()), self.events())
-        self.assertTrue(self.to_vjt)                    # its challenge, behind a KEYREQ
+        self.assertTrue(self.to_vjt)                    # its challenge
 
     def test_a_listed_users_plaintext_pm_without_a_pin_is_released_as_before(self):
         bot.handle_server_line(f":lucy!l@{HOST} PRIVMSG {bot.NICK} :ciao")
@@ -574,6 +584,7 @@ class RealBridgeTest(unittest.TestCase):
 
     def test_a_confirmed_bot_command_is_answered(self):
         from irc_olm.engine import Result
+        self.written()
         self.verify("vjt")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
@@ -589,6 +600,7 @@ class RealBridgeTest(unittest.TestCase):
 
     def test_a_bot_command_held_for_whois_is_answered_only_once_confirmed(self):
         from irc_olm.engine import Result
+        self.written()
         bot.verified.discard("vjt")
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
         now = bot.bridge.engine._clock()
@@ -603,6 +615,7 @@ class RealBridgeTest(unittest.TestCase):
 
     def test_a_pinned_users_addressed_bot_command_is_answered_in_the_channel_once_confirmed(self):
         from irc_olm.engine import Result
+        self.written()
         self.verify("vjt")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
@@ -616,6 +629,7 @@ class RealBridgeTest(unittest.TestCase):
 
     def test_an_addressed_bot_command_confirmed_after_we_renamed_is_answered(self):
         from irc_olm.engine import Result
+        self.written()
         self.verify("vjt")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
