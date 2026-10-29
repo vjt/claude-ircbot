@@ -33,6 +33,7 @@ PROJECT_DIR = Path.home() / ".claude/projects/-home-vjt-code-IRC-vjt-claude"
 TMUX_WINDOW_NAME = "ircbot"  # window name only — session-agnostic
 BOT_FIFO = Path("/home/vjt/code/IRC/vjt-claude/bot.send")
 ESCALATE_NICK = "vjt"        # SAY target when resolve stays broken
+FORCED_CLEAR_CHAN = "#sbiffo"  # where a refusal/AUP clear is announced (vjt, 2026-10-29)
 
 POLL_SEC = 2
 DEBOUNCE_SEC = 60           # any clear — AUP / idle / turns — holds this window
@@ -347,7 +348,7 @@ def _handle_sigusr1(_signum, _frame) -> None:
     _emit("SIGUSR1 received — will fire /clear + scrub on next tick")
 
 
-def fire_clear(reason: str, warn: bool = True) -> bool:
+def fire_clear(reason: str, warn: bool = True, announce: bool = False) -> bool:
     pane = resolve_claude_pane()
     now = time.time()
     if pane is None:
@@ -383,6 +384,15 @@ def fire_clear(reason: str, warn: bool = True) -> bool:
     log(f"{reason} → injecting /clear into {pane}")
     if not inject_clear(pane):
         return False
+    # A latched session drops its thread mid-conversation; say so in channel,
+    # or people see the bot lose the plot with no explanation (vjt, #sbiffo
+    # 2026-10-29 21:08). Idle/turns clears are routine and stay silent.
+    if announce:
+        send_fifo_say(
+            FORCED_CLEAR_CHAN,
+            f"watchdog: /clear forzato ({reason}), la sessione era bloccata "
+            f"dal filtro. Se ho perso il filo di qualcosa, ripetetemelo.",
+        )
     if inject_scrub(pane):
         log(f"scrub prompt injected into {pane}")
     return True
@@ -453,7 +463,7 @@ def main() -> int:
                         if now - last_fire < DEBOUNCE_SEC:
                             log(f"refusal {refusal} (debounced, skipping)")
                             break
-                        if fire_clear(f"REFUSAL {refusal}", warn=False):
+                        if fire_clear(f"REFUSAL {refusal}", warn=False, announce=True):
                             last_fire = now
                             turns_since_clear = 0
                             fired_this_tick = True
@@ -462,7 +472,7 @@ def main() -> int:
                         if now - last_fire < DEBOUNCE_SEC:
                             log("AUP match (debounced, skipping)")
                             break
-                        if fire_clear("AUP STUCK DETECTED"):
+                        if fire_clear("AUP STUCK DETECTED", announce=True):
                             last_fire = now
                             turns_since_clear = 0
                             fired_this_tick = True
