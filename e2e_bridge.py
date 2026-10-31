@@ -17,17 +17,18 @@ only READS the pins file: the operator makes it root-owned (or denies it to
 the bot's Claude session), and the bot says so (E2E_PINS_WRITABLE) when it
 could write it.
 
-Trust has two layers:
+Trust is one of two rules, picked by whether the nick has a pinned key:
 
-  * Layer 1 is today's rule for every line: the nick is in bot.trust, the host
-    matches its glob, and 307/330 says it is identified.
-  * Layer 2 is a pinned key for that nick. A user WITHOUT one keeps layer 1
-    alone, exactly as before. A user WITH one no longer counts in plain text
-    alone (no downgrade): in the encrypted query the session authenticates the
+  * Without one, layer 1, exactly as before: the nick is in bot.trust, the
+    host matches its glob, and 307/330 says it is identified.
+  * With one, the key REPLACES layer 1 (vjt 2026-10-31): the host, bot.trust
+    and services count for nothing either way, so a pinned user is trusted on
+    a network without services (IRCnet) and a squatter on the nick is not,
+    whatever its host. In the encrypted query the session authenticates the
     key. Outside it, a line addressed to the bot (its nick as a word) or a
     plaintext PM is held, a CHAL goes out over the session, and the line is
     released as TRUSTED only on a matching ACK within 15 s. Anything else from
-    that user in plain text is UNTRUSTED.
+    that nick in plain text is UNTRUSTED (no downgrade).
   * A different key on a pinned nick is an alarm (E2E_KEY_ALARM), and what it
     says never reaches the stream. So is a pinned key speaking under a nick
     pinned to another key.
@@ -141,7 +142,7 @@ class PinsFile:
 
 class Bridge:
     def __init__(self, engine, *, own_nick, pins, submit, room, emit, log, trust_check,
-                 is_listed, hold_dm, on_confirmed, clock=time.monotonic):
+                 is_listed, on_confirmed, clock=time.monotonic):
         self.engine = engine
         self.own_nick = own_nick
         self._pins = pins                # PinsFile
@@ -153,7 +154,6 @@ class Bridge:
         self._log = log                  # (direction, line, origin)
         self._trust_check = trust_check
         self._is_listed = is_listed
-        self._hold_dm = hold_dm          # (nick, host, body, extra_fields, on_release) -> depth
         self._on_confirmed = on_confirmed  # (nick, target, body, own_nick): a line its ACK released TRUSTED
         self._clock = clock
         self._lock = threading.RLock()
@@ -211,15 +211,19 @@ class Bridge:
             self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", f"TO={target}",
                        "REASON=channel")
             return
-        if not self._is_listed(nick):
-            # Strangers get nothing: no keys, no rebound (same gate as DMs).
-            self._emit("E2E_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}")
-            return
-        trusted, reason = self._trust_check(nick, host)
-        if not trusted and reason == "host-mismatch":
-            self._emit("E2E_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
-                       reason)
-            return
+        if self._pinned_key(nick) is None:
+            # Layer 1 is the gate for a nick without a pin (read again under
+            # the lock below). A pinned nick's gate is its key: the engine
+            # answers whoever holds it, and raises an alarm at any other key.
+            if not self._is_listed(nick):
+                # Strangers get nothing: no keys, no rebound (same gate as DMs).
+                self._emit("E2E_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}")
+                return
+            trusted, reason = self._trust_check(nick, host)
+            if not trusted and reason == "host-mismatch":
+                self._emit("E2E_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
+                           reason)
+                return
         with self._lock:
             frag = framing.parse(body)
             if self._pinned_key(nick) is None and (frag is None or frag.verb != "NACK"):
@@ -236,22 +240,17 @@ class Bridge:
 
     # --- plaintext orders ------------------------------------------------------
 
-    def gate_plaintext(self, nick: str, host: str, prefix: str, target: str, body: str,
-                       trusted: bool) -> str | None:
-        """Called for every plaintext PRIVMSG that reached the verdict.
+    def gate_plaintext(self, nick: str, host: str, prefix: str, target: str, body: str
+                       ) -> str | None:
+        """Called for every plaintext PRIVMSG, before layer 1 is consulted.
 
-        Returns None when today's verdict stands, "held" when the line waits for
-        an ACK (the bridge emits it later), "unchallenged" when it must be shown
-        UNTRUSTED because its author has a pinned key and plain text alone no
-        longer counts."""
+        Returns None when the nick has no pinned key (layer 1 decides),
+        "held" when the line waits for an ACK (the bridge emits it later),
+        "unchallenged" when it must be shown UNTRUSTED because plain text
+        alone never counts for a pinned nick. A PM is never "unchallenged"."""
         is_pm = not target.startswith(("#", "&"))
         with self._lock:
-            if not trusted:
-                return None
             if self._pinned_key(nick) is None:
-                if is_pm:
-                    # Released TRUSTED in plain text: so is the reply.
-                    self._reply_mode.pop(_fold(nick), None)
                 return None
             if not (is_pm or self._addressed.search(body)):
                 return "unchallenged"
@@ -270,6 +269,12 @@ class Bridge:
             self._emit("ORDER_HELD", f"FROM={nick}", f"HOST={host}", f"TO={target}",
                        f"LEN={len(body)}")
             return "held"
+
+    def trusted_in_plain(self, nick: str) -> None:
+        """bot.py released a plaintext PM from a nick without a pin as TRUSTED
+        (layer 1): the conversation is in plain text, and so is the reply."""
+        with self._lock:
+            self._reply_mode.pop(_fold(nick), None)
 
     # --- outbound ------------------------------------------------------------------
 
@@ -399,28 +404,12 @@ class Bridge:
             self._emit("E2E_DROPPED", f"FROM={nick}", f"HOST={host}", "REASON=not-the-pinned-key",
                        f"LEN={len(body)}")
             return
+        # The pinned key, under its own nick: that is the proof, and layer 1
+        # (host, bot.trust, services) has no say.
         extra = ["ENCRYPTED=1"] + (["ACTION=1"] if kind == "action" else [])
-        trusted, reason = self._trust_check(nick, host)
-        if not trusted:
-            if reason == "pending-whois":
-                depth = self._hold_dm(nick, host, body, tuple(extra),
-                                      lambda: self._encrypted_dm_released(nick))
-                self._emit("DM_HELD", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
-                           f"QUEUED={depth}", "ENCRYPTED=1")
-            else:
-                self._emit("DM_BLOCKED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
-                           reason, "ENCRYPTED=1")
-            return
         self._reply_mode[_fold(nick)] = self._clock()
         self._emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
                    f"TO={self.own_nick}", f"BODY={body}")
-
-    def _encrypted_dm_released(self, nick: str) -> bool:
-        """bot.py's dm_flush is about to release a held encrypted DM as
-        TRUSTED: the reply to it is encrypted too, as on the direct path."""
-        with self._lock:
-            self._reply_mode[_fold(nick)] = self._clock()
-        return True
 
     def _release(self, nonce: str, *, confirmed: bool, why: str = "") -> None:
         h = self._held.pop(nonce, None)
