@@ -164,7 +164,9 @@ for the `WHOIS` (`DM_HELD`) and is dropped if that fails (`DM_DROPPED`), or
 at once if its host does not match the glob (`DM_BLOCKED`). A private
 message from a nick not listed is dropped at once (`DM_BLOCKED`), unless
 `bot.dmallow`, below, lets it through. A dropped message never shows its
-text. `INVITE` auto-join is gated on the same check.
+text. `INVITE` auto-join is gated on the same check. A nick with a pinned
+E2E key takes another path for its messages (below, "Trust, with a pinned
+key"); its `INVITE` still takes this one.
 
 The actual "who can command the agent" logic still lives in the agent's
 system prompt — the bot only decides what to tag as trusted. The bot is
@@ -263,12 +265,15 @@ bot's new master key, and the operator replaces each peer's key in the pins
 file with its master key: a v1 key left there turns every message from that
 peer into `E2E_KEY_ALARM`.
 
-**Trust, with a pinned key.** Layer 1 (the trust list above) still applies to
-every line. A user whose nick has a pinned key gets a second layer, and plain
-text alone no longer counts for them:
+**Trust, with a pinned key.** For a nick with a pinned key, the key replaces
+the trust list above: `bot.trust`, the host glob and services (`307`/`330`)
+count for nothing, either way. The nick need not be listed, the bot sends no
+`WHOIS` for it and waits for none, so a pinned user is trusted on a network
+without services (IRCnet) and from any host. Plain text alone never counts
+for that nick:
 
 - In the encrypted query the session authenticates the key:
-  `MSG TRUSTED ENCRYPTED=1 FROM=… BODY=…`.
+  `MSG TRUSTED ENCRYPTED=1 FROM=… BODY=…`, whatever the host.
 - A plaintext line addressed to the bot (its nick as a word) or a plaintext
   PM is held (`ORDER_HELD`), and a challenge goes out over the encrypted
   session, to each of their devices that has written to the bot on it (wire
@@ -282,6 +287,13 @@ text alone no longer counts for them:
 - Any other plaintext line from them is `MSG UNTRUSTED WHY=unchallenged`.
 - A different key on a pinned nick is `E2E_KEY_ALARM` and never reaches the
   stream; so is a pinned key speaking under a nick pinned to another key.
+- So whoever else holds a pinned nick, from whatever host, gets no more than
+  `MSG UNTRUSTED` rows: their channel lines as `WHY=unchallenged` or, if
+  addressed to the bot, `WHY=no-ack`; their PMs held and then dropped
+  (`DM_DROPPED … no-ack`), never shown. What they can still cost is the
+  bot's public keys (`KEYS`, answered to any key asking under a pinned nick,
+  as for the user on a new host), alarms, and the challenge budget below.
+- A nick without a pinned key keeps the trust list exactly as above.
 - Under any other nick their key gets nothing: what it sends from a nick
   without a pin is dropped (`E2E_DROPPED REASON=unpinned-nick`), the answer
   to a challenge included, so an order whose author changed nick before
