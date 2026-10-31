@@ -418,27 +418,26 @@ def dm_reject_once(nick):
 # until the WHOIS answers: 307/330 releases it as TRUSTED, 318-without-307 drops
 # it. Holding rather than dropping outright is what keeps the FIRST DM from a
 # genuinely trusted nick (vjt's own, right after a reconnect) from vanishing.
-# Nothing plaintext is lost forensically: the raw line is in bot.log either
-# way, and vjt can order it read from there. An ENCRYPTED=1 DM is not: bot.log
-# has its ciphertext only, so one dropped here is gone.
+# Nothing is lost forensically: the raw line is in bot.log either way, and vjt
+# can order it read from there. Only plaintext is ever held: a nick with a
+# pinned key never waits for a WHOIS (e2e_bridge, its key replaces layer 1).
 DM_HOLD_MAX = 5  # per nick, newest wins — a flood can't grow the queue
-dm_held: dict[str, list[tuple]] = {}  # nick_lower -> [(host, body, extra, on_release)]
+dm_held: dict[str, list[tuple]] = {}  # nick_lower -> [(host, body, on_release)]
 
 
-def dm_hold(nick, host, body, extra=(), on_release=None):
+def dm_hold(nick, host, body, on_release=None):
     """Park a DM awaiting WHOIS. Returns the queue depth for the event line.
-    `extra` are fields for the MSG event (ENCRYPTED=1 ... from e2e_bridge).
     `on_release`, when given, runs once the WHOIS has verified the sender and
     before the DM is released as TRUSTED; returning False takes the DM over
-    (e2e_bridge challenges a pinned user's plaintext PM, and releases or
-    drops it itself). It runs outside dm_lock."""
+    (e2e_bridge challenges it, its nick pinned in the meantime, and releases
+    or drops it itself). It runs outside dm_lock."""
     n = nick.lower()
     with dm_lock:
         q = dm_held.setdefault(n, [])
-        q.append((host, body, tuple(extra), on_release))
-        for old_host, old_body, old_extra, _ in q[:-DM_HOLD_MAX]:
+        q.append((host, body, on_release))
+        for old_host, old_body, _ in q[:-DM_HOLD_MAX]:
             emit("DM_DROPPED", f"FROM={nick}", f"HOST={old_host}", f"LEN={len(old_body)}",
-                 "evicted", *old_extra)
+                 "evicted")
         del q[:-DM_HOLD_MAX]
         return len(q)
 
@@ -449,7 +448,7 @@ def dm_flush(nick, reason):
     n = nick.lower()
     with dm_lock:
         queued = dm_held.pop(n, [])
-    for host, body, extra, on_release in queued:
+    for host, body, on_release in queued:
         if n in verified and host_matches(n, host):
             try:
                 if on_release is not None and not on_release():
@@ -458,15 +457,14 @@ def dm_flush(nick, reason):
                 # Each DM is popped already: one that fails must not take the
                 # rest of the queue with it.
                 emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}", f"LEN={len(body)}",
-                     f"error:{type(e).__name__}", *extra)
+                     f"error:{type(e).__name__}")
                 continue
-            emit("MSG", "TRUSTED", *extra, f"FROM={nick}", f"HOST={host}",
+            emit("MSG", "TRUSTED", f"FROM={nick}", f"HOST={host}",
                  f"TO={NICK}", "HELD=1", f"BODY={body}")
-            if "ENCRYPTED=1" not in extra:
-                on_trusted_line(nick, NICK, body, me)
+            on_trusted_line(nick, NICK, body, me)
         else:
             emit("DM_DROPPED", f"FROM={nick}", f"HOST={host}",
-                 f"LEN={len(body)}", reason, *extra)
+                 f"LEN={len(body)}", reason)
 
 
 def trust_reset(nick, reason):
@@ -1049,6 +1047,21 @@ def handle_server_line(line):
             elif ctcp.upper().startswith("PING"):
                 send_raw(f"NOTICE {nick} :\x01{ctcp}\x01")
             return
+        if bridge:
+            # A nick with a pinned key: the key replaces layer 1 (vjt
+            # 2026-10-31). Its PM or a line addressed to the bot is challenged
+            # whatever its host, bot.trust or services say, and anything else
+            # in plain text is UNTRUSTED: a squatter, on any host, gets no
+            # more than that. The DM gates below are layer 1's.
+            verdict = bridge.gate_plaintext(nick, host, prefix, target, body)
+            if verdict is not None:
+                if verdict == "unchallenged":
+                    emit("MSG", "UNTRUSTED", "WHY=unchallenged", f"FROM={nick}", f"HOST={host}",
+                         f"TO={target}", f"BODY={body}")
+                # "held": waiting for the ACK of a CHAL, e2e_bridge emits it later.
+                if target.startswith("#") and nick.lower() != NICK.lower():
+                    _arm_idle(target)
+                return
         # Private message from a nick that isn't even trust-listed: drop it
         # here. No BODY is emitted — the whole point is that the payload never
         # reaches the event stream (vjt 2026-08-03).
@@ -1074,10 +1087,13 @@ def handle_server_line(line):
             # else (host-mismatch: a squatter on a listed nick) will never become
             # trusted, so drop it now and rebound the notice.
             if reason == "pending-whois":
-                # A pinned user's PM still needs its challenge once verified
-                # (e2e_bridge): layer 1 alone never releases it.
+                # A nick pinned while its PM waited is challenged at release
+                # (e2e_bridge): layer 1 never releases a pinned nick's line.
                 def release():
-                    return bridge.gate_plaintext(nick, host, prefix, target, body, True) != "held"
+                    if bridge.gate_plaintext(nick, host, prefix, target, body) is not None:
+                        return False
+                    bridge.trusted_in_plain(nick)
+                    return True
                 depth = dm_hold(nick, host, body, on_release=release if bridge else None)
                 emit("DM_HELD", f"FROM={nick}", f"HOST={host}",
                      f"LEN={len(body)}", f"QUEUED={depth}")
@@ -1087,19 +1103,10 @@ def handle_server_line(line):
                      f"LEN={len(body)}", reason,
                      "replied" if replied else "silent")
             return
-        extra = []
-        if bridge:
-            verdict = bridge.gate_plaintext(nick, host, prefix, target, body, trusted)
-            if verdict == "held":
-                # Waiting for the ACK of a CHAL: e2e_bridge emits it later.
-                if target.startswith("#") and nick.lower() != NICK.lower():
-                    _arm_idle(target)
-                return
-            if verdict == "unchallenged":
-                # This user has a verified key: plain text alone no longer
-                # counts (no downgrade), and this line was not challenged.
-                trust, extra = "UNTRUSTED", ["WHY=unchallenged"]
-        emit("MSG", trust, *extra, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
+        if bridge and trusted and is_dm:
+            # Released TRUSTED in plain text: so is the reply.
+            bridge.trusted_in_plain(nick)
+        emit("MSG", trust, f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
         if is_trust_listed(nick) and not trusted:
             emit("TRUST_DENIED", nick, host, reason)
         if trust == "TRUSTED":
@@ -1379,7 +1386,7 @@ def _start_e2e():
                         on_lost=lambda nick, msgid, reason: bridge.on_lost(nick, msgid, reason))
     bridge = e2e_bridge.Bridge(
         engine, own_nick=NICK, pins=pins, submit=pacer.submit_all, room=pacer.room, emit=emit,
-        log=log, trust_check=trust_check, is_listed=is_trust_listed, hold_dm=dm_hold,
+        log=log, trust_check=trust_check, is_listed=is_trust_listed,
         on_confirmed=on_trusted_line)
     emit("E2E_READY", f"KEY={engine.fingerprint}", f"NETWORK={E2E_NETWORK}")
 

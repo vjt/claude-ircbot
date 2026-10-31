@@ -27,7 +27,7 @@ class Harness:
     def __init__(self):
         self.dir = tempfile.mkdtemp()
         self.clock = Clock()
-        self.events, self.logs, self.held_dms, self.confirmed = [], [], [], []
+        self.events, self.logs, self.confirmed = [], [], []
         self.listed = {"vjt", "lucy"}
         self.trust = {"vjt": (True, "ok"), "lucy": (True, "ok")}
         self.to_vjt = []
@@ -46,8 +46,6 @@ class Harness:
             log=lambda d, line, origin=None: self.logs.append(f"{d} {line}"),
             trust_check=lambda n, h: self.trust.get(n.lower(), (False, "not-listed")),
             is_listed=lambda n: n.lower() in self.listed,
-            hold_dm=lambda n, h, b, extra, on_release: self.held_dms.append(
-                (n, b, extra, on_release)) or 1,
             on_confirmed=lambda n, t, b, own_nick: self.confirmed.append((n, t, b)),
             clock=self.clock)
         self.bridge.on_isupport(["NETWORK=Azzurra", "CASEMAPPING=ascii"])
@@ -110,8 +108,17 @@ class Harness:
     def msgs(self):
         return [e for e in self.events if e.startswith("MSG ")]
 
-    def gate(self, body, target="#sbiffo", nick="vjt", trusted=True):
-        return self.bridge.gate_plaintext(nick, HOST, f"{nick}!v@{HOST}", target, body, trusted)
+    def gate(self, body, target="#sbiffo", nick="vjt", host=HOST):
+        return self.bridge.gate_plaintext(nick, host, f"{nick}!v@{host}", target, body)
+
+    def layer_one_fails(self, reason):
+        """vjt, still pinned, as layer 1 sees him: off the trust list, or on
+        it from the wrong host, or never answered by services."""
+        if reason == "not-listed":
+            self.listed.discard("vjt")
+            del self.trust["vjt"]
+        else:
+            self.trust["vjt"] = (False, reason)
 
 
 class BridgeTest(unittest.TestCase):
@@ -151,13 +158,41 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.h.bot_wire, [])
         self.assertEqual(self.h.msgs(), [])
 
-    def test_listed_nick_from_the_wrong_host_is_blocked(self):
-        self.h.trust["vjt"] = (False, "host-mismatch")
-        self.h.say("i am vjt")
+    def test_listed_nick_without_a_pin_from_the_wrong_host_is_blocked(self):
+        lucy = self.h._engine("lucy", pins={BOT: self.h.bot.fingerprint})
+        self.h.vjt = lucy
+        self.h.trust["lucy"] = (False, "host-mismatch")
+        self.h.say("i am lucy", sender="lucy", host="evil.example")
         self.assertEqual(self.h.msgs(), [])
         self.assertEqual(self.h.bot_wire, [])   # not even KEYS for a squatter
-        self.assertTrue(any(e.startswith("E2E_BLOCKED FROM=vjt") and e.endswith("host-mismatch")
+        self.assertTrue(any(e.startswith("E2E_BLOCKED FROM=lucy") and e.endswith("host-mismatch")
                             for e in self.h.events))
+
+    def test_the_pinned_key_is_trusted_whatever_layer_one_says(self):
+        # The key replaces layer 1: no host glob, no trust list, no services
+        # (IRCnet has none) and no WHOIS to wait for.
+        for reason in ("host-mismatch", "pending-whois", "not-listed"):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.h.layer_one_fails(reason)
+                self.h.say("ciao bot", host="dyn.example.net")
+                self.assertEqual(self.h.msgs(), [
+                    "MSG TRUSTED ENCRYPTED=1 FROM=vjt HOST=dyn.example.net "
+                    f"TO={BOT} BODY=ciao bot"])
+                self.assertTrue(self.h.bridge.wants_encryption("vjt"))
+
+    def test_another_key_on_a_pinned_nick_alarms_from_any_host(self):
+        # A squatter off the trust list and off the glob gets the alarm, and
+        # its text never reaches the stream.
+        self.h.layer_one_fails("not-listed")
+        impostor = self.h._engine("vjt", state=os.path.join(self.h.dir, "impostor.json"),
+                                  pins={BOT: self.h.bot.fingerprint})
+        self.h.vjt = impostor
+        self.h.say("sono vjt, giuro", host="evil.example")
+        self.assertEqual(self.h.msgs(), [])
+        self.assertTrue(any(e.startswith("E2E_KEY_ALARM FROM=vjt HOST=evil.example ")
+                            for e in self.h.events), self.h.events)
+        self.assertNoPlaintextLeak("sono vjt, giuro")
 
     def test_a_listed_nick_without_a_pinned_key_gets_silence(self):
         lucy = self.h._engine("lucy", pins={BOT: self.h.bot.fingerprint})
@@ -165,13 +200,6 @@ class BridgeTest(unittest.TestCase):
         self.h.say("ciao", sender="lucy")
         self.assertEqual(self.h.bot_wire, [])   # no KEYS, no NACK: an unknown key is ignored
         self.assertEqual(self.h.msgs(), [])
-
-    def test_encrypted_dm_waiting_for_whois_is_held_with_its_flag(self):
-        self.h.trust["vjt"] = (False, "pending-whois")
-        self.h.say("presto")
-        self.assertEqual(self.h.msgs(), [])
-        self.assertEqual([h[:3] for h in self.h.held_dms], [("vjt", "presto", ("ENCRYPTED=1",))])
-        self.assertNoPlaintextLeak("presto")
 
     def test_e2e_in_a_channel_is_dropped(self):
         r = self.h.vjt.send(BOT, {"t": "text", "body": "x"})
@@ -257,7 +285,8 @@ class BridgeTest(unittest.TestCase):
         self.h.write_pins("")
         self.h.bridge.tick()
         self.assertTrue(self.h.bridge.wants_encryption("vjt"))
-        self.assertIsNone(self.h.gate("in chiaro", target=BOT))      # layer 1: TRUSTED
+        self.assertIsNone(self.h.gate("in chiaro", target=BOT))      # layer 1 decides
+        self.h.bridge.trusted_in_plain("vjt")                      # bot.py: TRUSTED
         self.assertFalse(self.h.bridge.wants_encryption("vjt"))
 
     def test_an_unconfirmed_plaintext_pm_leaves_the_conversation_encrypted(self):
@@ -269,14 +298,6 @@ class BridgeTest(unittest.TestCase):
         self.h.clock.t += 16
         self.h.bridge.tick()
         self.assertTrue(any(e.startswith("DM_DROPPED FROM=vjt") for e in self.h.events))
-        self.assertTrue(self.h.bridge.wants_encryption("vjt"))
-
-    def test_an_encrypted_dm_released_from_the_whois_hold_makes_the_reply_encrypted(self):
-        self.h.trust["vjt"] = (False, "pending-whois")
-        self.h.say("presto")
-        self.assertFalse(self.h.bridge.wants_encryption("vjt"))
-        (nick, body, extra, on_release) = self.h.held_dms[0]
-        self.assertTrue(on_release())                   # dm_flush: released as TRUSTED
         self.assertTrue(self.h.bridge.wants_encryption("vjt"))
 
     def test_reply_mode_expires(self):
@@ -593,8 +614,41 @@ class BridgeTest(unittest.TestCase):
     def test_nick_inside_another_word_does_not_address_the_bot(self):
         self.assertEqual(self.h.gate(f"x{BOT}y"), "unchallenged")
 
-    def test_layer_one_failure_is_not_challenged(self):
-        self.assertIsNone(self.h.gate(f"{BOT}: x", trusted=False))
+    def test_a_pinned_order_is_confirmed_whatever_layer_one_says(self):
+        line = f"{BOT}: riavvia"
+        for reason in ("host-mismatch", "pending-whois", "not-listed"):
+            for target in ("#sbiffo", BOT):
+                with self.subTest(reason=reason, target=target):
+                    self.setUp()
+                    self.h.layer_one_fails(reason)
+                    self.h.written()
+                    self.assertEqual(self.h.gate(line, target=target, host="dyn.example.net"),
+                                     "held")
+                    self.h.pump()
+                    (chal,) = [e.inner for e in self.h.vjt_got if e.inner["t"] == "chal"]
+                    self.assertEqual(chal["sender_mask"], "vjt!v@dyn.example.net")
+                    self.h.pump(self.h.vjt.send(BOT, {"t": "ack", "nonce": chal["nonce"]}),
+                                host="dyn.example.net")
+                    self.assertEqual(self.h.msgs(), [
+                        "MSG TRUSTED CONFIRMED=1 FROM=vjt HOST=dyn.example.net "
+                        f"TO={target} BODY={line}"])
+
+    def test_a_squatter_on_a_pinned_nick_gets_no_more_than_untrusted(self):
+        # Any host, on the list or off it: chatter is unchallenged, an order
+        # or a PM waits for an ACK only the key can give, and the PM's text
+        # never reaches the stream.
+        self.h.layer_one_fails("not-listed")
+        self.assertEqual(self.h.gate("chiacchiere", host="evil.example"), "unchallenged")
+        self.assertEqual(self.h.gate(f"{BOT}: riavvia", host="evil.example"), "held")
+        self.assertEqual(self.h.gate("dammi la password", target=BOT, host="evil.example"), "held")
+        self.h.clock.t += 16
+        self.h.bridge.tick()
+        self.assertEqual(self.h.msgs(), [
+            f"MSG UNTRUSTED WHY=no-ack FROM=vjt HOST=evil.example TO=#sbiffo BODY={BOT}: riavvia"])
+        self.assertTrue(any(e.startswith("DM_DROPPED FROM=vjt HOST=evil.example") and
+                            e.endswith("no-ack") for e in self.h.events))
+        self.assertNoPlaintextLeak("dammi la password")
+        self.assertEqual(self.h.confirmed, [])
 
     # --- server facts -------------------------------------------------------------
 

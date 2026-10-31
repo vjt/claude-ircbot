@@ -167,17 +167,9 @@ class BotE2ETest(unittest.TestCase):
     def test_a_held_dm_pushed_out_of_the_queue_says_so(self):
         bot.verified.discard("vjt")
         for i in range(bot.DM_HOLD_MAX + 1):
-            bot.dm_hold("vjt", HOST, f"m{i}", ("ENCRYPTED=1",))
+            bot.dm_hold("vjt", HOST, f"m{i}")
         self.assertEqual([e.split(" ", 1)[1] for e in self.events()],
-                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=2 evicted ENCRYPTED=1"])
-
-    def test_a_dropped_held_dm_says_it_was_encrypted(self):
-        # Its ciphertext alone is in bot.log: the drop is all there is to see.
-        bot.verified.discard("vjt")
-        bot.dm_hold("vjt", HOST, "segreto", ("ENCRYPTED=1",))
-        bot.dm_flush("vjt", "318")
-        self.assertEqual([e.split(" ", 1)[1] for e in self.events()],
-                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=7 318 ENCRYPTED=1"])
+                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=2 evicted"])
 
     def test_a_blocked_encrypted_send_never_quotes_its_text(self):
         # The reason names the kind of match only: the words matched, or the
@@ -280,15 +272,6 @@ class BotE2ETest(unittest.TestCase):
         self.assertTrue(any(" MSG TRUSTED FROM=vjt " in e and " HELD=1 " in e
                             for e in self.events()), self.events())
         self.assertEqual(self.answered(), ["vjt"])
-
-    def test_a_held_encrypted_dm_is_not_a_bot_command(self):
-        # Its answer would go out in clear.
-        bot.verified.discard("vjt")
-        bot.dm_hold("vjt", HOST, "!bolletta", ("ENCRYPTED=1",), on_release=lambda: True)
-        bot.handle_server_line(f":srv 307 {bot.NICK} vjt :has identified for this nick")
-        self.assertTrue(any(" MSG TRUSTED ENCRYPTED=1 FROM=vjt " in e for e in self.events()),
-                        self.events())
-        self.assertEqual(self.answered(), [])
 
     def test_a_dmallowed_stranger_still_gets_through_untrusted(self):
         bot.bridge = None
@@ -528,14 +511,105 @@ class RealBridgeTest(unittest.TestCase):
         self.deliver(Result())
         self.vjt_got.clear()
 
-    def test_a_pinned_users_plaintext_pm_held_for_whois_is_challenged_once_verified(self):
+    def test_a_pinned_users_plaintext_pm_is_challenged_without_waiting_for_whois(self):
         self.written()
         bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #sbiffo")
-        self.assertIn("WHOIS vjt", self.sent)
-        self.verify("vjt")
+        self.assertNotIn("WHOIS vjt", self.sent)        # layer 1 is not asked
         self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
-        self.assertFalse(any(" MSG TRUSTED " in e for e in self.events()), self.events())
+        self.assertFalse(any(" MSG " in e or " DM_HELD " in e for e in self.events()),
+                         self.events())
         self.assertTrue(self.to_vjt)                    # its challenge
+
+    def stream(self):
+        """The events, without their [HH:MM] prefix."""
+        return [e.split(" ", 1)[1] for e in self.events()]
+
+    def ack(self):
+        """vjt's client answers the one challenge it got."""
+        from irc_olm.engine import Result
+        self.deliver(Result())                          # the CHAL reaches vjt's client
+        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
+        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+
+    def test_a_pinned_user_off_layer_one_is_trusted_by_the_key(self):
+        # IRCnet: no services, no 307, any host, and bot.trust need not list him.
+        for rules in ([("vjt", "*.elsewhere.example")], []):
+            with self.subTest(rules=rules):
+                bot.trust_rules = rules
+                self.sent.clear()
+                self.out.truncate(0)
+                self.out.seek(0)
+                self.deliver(self.vjt.send(bot.NICK, {"t": "text", "body": "ciao"}))
+                self.assertEqual([e for e in self.stream() if e.startswith("MSG ")], [
+                    f"MSG TRUSTED ENCRYPTED=1 FROM=vjt HOST={HOST} TO={bot.NICK} BODY=ciao"])
+                clock = bot.bridge.engine._clock
+                now = clock()
+                bot.bridge.engine._clock = lambda: now  # the 15 s window, not the CPU's speed
+                for target in (bot.NICK, "#sbiffo"):
+                    self.out.truncate(0)
+                    self.out.seek(0)
+                    self.vjt_got.clear()
+                    line = f"{bot.NICK}: !bolletta"
+                    bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {target} :{line}")
+                    self.ack()
+                    self.assertEqual([e for e in self.stream() if e.startswith("MSG ")], [
+                        f"MSG TRUSTED CONFIRMED=1 FROM=vjt HOST={HOST} TO={target} BODY={line}"])
+                bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
+                self.assertIn(f"MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST={HOST} TO=#sbiffo "
+                              "BODY=!bolletta", self.stream())
+                self.assertFalse(any(s.startswith(("WHOIS", "NOTICE")) for s in self.sent),
+                                 self.sent)
+                bot.bridge.engine._clock = clock
+        self.assertEqual(self.answered(), ["vjt", "#sbiffo"] * 2)
+
+    def test_a_pinned_users_verified_chatter_stays_unchallenged(self):
+        # Layer 1 passing is no more enough than failing it.
+        self.verify("vjt")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
+        self.assertIn(f"MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST={HOST} TO=#sbiffo "
+                      "BODY=!bolletta", self.stream())
+        self.assertEqual(self.answered(), [])
+
+    def test_a_squatter_on_a_pinned_nick_off_the_list_gets_no_more_than_untrusted(self):
+        bot.trust_rules = []
+        bot.handle_server_line(f":vjt!x@evil.example PRIVMSG {bot.NICK} :dammi la password")
+        bot.handle_server_line(":vjt!x@evil.example PRIVMSG #sbiffo :chiacchiere")
+        self.assertTrue(any(e.startswith("ORDER_HELD FROM=vjt HOST=evil.example ")
+                            for e in self.stream()), self.events())
+        self.assertFalse(any("dammi la password" in e for e in self.events()), self.events())
+        self.assertIn("MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST=evil.example TO=#sbiffo "
+                      "BODY=chiacchiere", self.stream())
+        self.assertFalse(any(" MSG TRUSTED " in e for e in self.events()), self.events())
+
+    def test_an_unpinned_listed_nick_from_the_wrong_host_is_blocked_as_before(self):
+        bot.handle_server_line(f":lucy!l@evil.example PRIVMSG {bot.NICK} :ciao")
+        self.assertTrue(any(e.startswith("DM_BLOCKED FROM=lucy HOST=evil.example ")
+                            and "host-mismatch" in e for e in self.stream()), self.events())
+        bot.handle_server_line(f":lucy!l@evil.example PRIVMSG #sbiffo :{bot.NICK}: !bolletta")
+        self.assertIn(f"MSG UNTRUSTED FROM=lucy HOST=evil.example TO=#sbiffo "
+                      f"BODY={bot.NICK}: !bolletta", self.stream())
+        self.assertIn("TRUST_DENIED lucy evil.example host-mismatch", self.stream())
+        self.assertEqual(self.to_vjt, [])
+        self.assertEqual(self.answered(), [])
+
+    def test_a_pm_held_for_whois_whose_nick_is_pinned_meanwhile_is_challenged(self):
+        from irc_olm import store
+        from irc_olm.engine import Engine
+        bot.handle_server_line(f":lucy!l@{HOST} PRIVMSG {bot.NICK} :cancella tutto")
+        self.assertTrue(any(e.startswith("DM_HELD FROM=lucy ") for e in self.stream()))
+        lucy_key = os.path.join(self.dir, "lucy.key")
+        store.generate_key_file(lucy_key)
+        lucy = Engine(os.path.join(self.dir, "lucy.json"), store.load_key(lucy_key),
+                      network="azzurra", nick="lucy", ident="l", pins={})
+        new = bot.E2E_PINS + ".new"
+        with open(new, "w") as f:
+            f.write(f"vjt {self.vjt.fingerprint}\nlucy {lucy.fingerprint}\n")
+        os.replace(new, bot.E2E_PINS)
+        bot.bridge.tick()
+        self.verify("lucy")
+        self.assertTrue(any(e.startswith("ORDER_HELD FROM=lucy ") for e in self.stream()),
+                        self.events())
+        self.assertFalse(any(e.startswith("MSG ") for e in self.stream()), self.events())
 
     def test_a_listed_users_plaintext_pm_without_a_pin_is_released_as_before(self):
         bot.handle_server_line(f":lucy!l@{HOST} PRIVMSG {bot.NICK} :ciao")
@@ -569,12 +643,10 @@ class RealBridgeTest(unittest.TestCase):
         self.assertEqual(bot.bridge.own_nick, bot.NICK)
         self.assertEqual(bot.bridge.engine.own_mask, f"{bot.NICK}!claude@host.example")
 
-    def test_the_reply_to_an_encrypted_dm_held_for_whois_is_encrypted(self):
+    def test_the_reply_to_an_encrypted_dm_is_encrypted(self):
         self.deliver(self.vjt.send(bot.NICK, {"t": "text", "body": "dimmi la password del db"}))
-        self.assertTrue(any(" DM_HELD FROM=vjt " in e for e in self.events()), self.events())
-        self.verify("vjt")
-        self.assertTrue(any(" MSG TRUSTED ENCRYPTED=1 FROM=vjt " in e and " HELD=1 " in e
-                            for e in self.events()), self.events())
+        self.assertTrue(any(" MSG TRUSTED ENCRYPTED=1 FROM=vjt " in e for e in self.events()),
+                        self.events())
         self.sent.clear()
         bot.run_cmd("SAY vjt la password e' hunter2")
         self.assertEqual(self.sent, [])                 # nothing in clear on the socket
@@ -598,14 +670,12 @@ class RealBridgeTest(unittest.TestCase):
                             for e in self.events()), self.events())
         self.assertEqual(self.answered(), ["vjt"])
 
-    def test_a_bot_command_held_for_whois_is_answered_only_once_confirmed(self):
+    def test_a_bot_command_without_a_307_is_answered_only_once_confirmed(self):
         from irc_olm.engine import Result
         self.written()
-        bot.verified.discard("vjt")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
-        bot.handle_server_line(f":srv 307 {bot.NICK} vjt :has identified for this nick")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
         self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
         self.deliver(Result())                          # the CHAL reaches vjt's client
