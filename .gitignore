@@ -5,11 +5,9 @@ bot.startup
 bot.stdout.log
 
 # Trust lists are per-deployment (who YOU trust, on YOUR hosts): untracked.
-# Format and an example live in README. bot.trust.ircnet stays tracked: it is
-# empty by design and the reasoning in it is the point.
+# Format and an example live in README.
 bot.trust
 bot.trust.libera
-bot.trust.convento
 bot.dmallow*
 
 # Libera.Chat instance runtime (2nd bot: same code, own nick/FIFO/logs/env).
@@ -19,21 +17,7 @@ bot.startup.libera
 bot.libera.log
 bot.libera.stdout.log
 
-# IRCnet instance runtime (3rd bot: same code, own nick/FIFO/logs).
-# bot.trust.ircnet IS tracked — it is empty BY DESIGN and the reasoning in it
-# is the point, not the entries. .env.ircnet carries no NICKSERV_PASS (IRCnet
-# has no services at all) but stays untracked like its twins, so the pattern
-# never becomes "a .env in this repo is safe to commit".
-.env.ircnet
-bot.send.ircnet
-bot.startup.ircnet
-bot.ircnet.log
-bot.ircnet.stdout.log
 aup_watchdog.log
-roll_counter.log
-chanstats.log
-rolls.json
-rolls.json.bak-*
 scrub.log
 __pycache__/
 *.pyc
@@ -57,45 +41,6 @@ tmp/
 # Host-local automation helpers (cron scripts + their logs) — not for public repo
 tools/
 
-
-# Petition sidecar private state (nick+host dedup, PII — never synced/committed)
-firma_state.json
-firma_counter.log
-
-# sniffo message-stats sidecar — not tracked here (lives in its own folder);
-# its DB, slug salt, logs and rendered per-channel output are all PII.
-sniffo_stats/
-systemd/vjt-claude-sniffo-stats.service
-
-# Dinner poll sidecar private state (nick + vote) — not for public repo
-cena_state.json
-cena_counter.log
-
-# Impiccato sidecar — state, logs and the question bank itself, all untracked.
-# The state is a scoreboard keyed by nick, so it is PII. The BANK is out for a
-# different reason (vjt's call, 2026-08-25): its `goliardia` set answers with
-# bestemmie, which belong in the channel and not in a public repo. The code
-# ships, the content stays local: drop your own impiccato_domande.json beside
-# impiccato.py — without one it exits rather than starting empty.
-impiccato_domande.json
-impiccato_state.json
-impiccato_state.*.json
-impiccato.*.log
-
-# !list gag sidecar runtime log
-list_sidecar.log
-next_state.json
-next_counter.log
-cena_ito_state.json
-cena_ito.log
-
-# caccia alle suore: stato di gioco e punteggi, per canale. Locale, non
-# versionato — i punteggi sono di chi gioca, non del repo.
-suore_state.json
-suore_*_state.json
-suore.log
-suore_*.log
-
 # Leak guard store: recent lines of the reserved channels (confidential)
 reserved_recent.tsv
 reserved_recent.tsv.tmp
@@ -110,6 +55,3 @@ reserved_recent.tsv.tmp
 bot.e2e*
 .bot.e2e*
 
-# Sonic petition (firma_counter.py, second instance): private state + log
-sonic_state.json
-sonic_petition.log
