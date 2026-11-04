@@ -99,6 +99,10 @@ BLASPHEMY_STOPWORDS = frozenset({
     # frequent false positives seen in Italian chat
     "caro", "cara", "buono", "buona", "amore", "amori", "mio",
     "pietà", "celeste", "assunta",
+    # attenuated / auspicious forms, measured on #grappa 2026-09-19:
+    # "dio bono" (toscano), "se dio vuole", "dio solo sa", "dio permettendo"
+    "bono", "bona", "vuole", "vuoi", "voglia", "vorrà", "vorra",
+    "volesse", "solo", "permettendo",
 })
 
 CONCAT_PAT = re.compile(
