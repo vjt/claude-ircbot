@@ -67,13 +67,13 @@ For EACH stream independently:
     which chat is which lives in `[[project_melablu_support]]` / `[[reference_telegram_bridge_handles]]`,
     not in this repo):
     ```
-    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/tmp/tg_poll.sh
+    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/var/tg_poll.sh
              persistent: true, timeout_ms: 3600000
              description: "Telegram @gazzurbo_bot messages (Melablu support + shared group)"
     ```
     Token lives at `~/.config/gazzurbo/token` (600, never printed); the poller persists its
-    `getUpdates` offset in `tmp/tg_offset`, so a restart replays nothing. Reply with
-    `tmp/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). **Only ONE poller may run** —
+    `getUpdates` offset in `var/tg_offset`, so a restart replays nothing. Reply with
+    `var/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). **Only ONE poller may run** —
     a second `getUpdates` on the same token gets `409 Conflict` and both starve.
 - **m42 alarms** (4th Monitor, always attach fresh — vjt 2026-11-03: «metti dei monitor su questi
   eventi così puoi reagire»). The cron jobs in `/srv/siem/alarms/` DM vjt and append each alert to
