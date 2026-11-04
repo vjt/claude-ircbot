@@ -36,6 +36,9 @@ refs/
 
 # Scratch / transient workspace crud — dump here, gitignored wholesale
 tmp/
+# Runtime state (tg poller, orch-send log, watchers) and kept scratch
+var/
+archive/
 *.lock
 
 # Host-local automation helpers (cron scripts + their logs) — not for public repo
