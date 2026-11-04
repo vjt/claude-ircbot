@@ -31,7 +31,7 @@ WorkingDirectory=/home/vjt/code/IRC/vjt-claude
 # Rejected: irc.underworld.no and irc.eversible.com answer 001 but are EFNet,
 # not IRCnet — the cert was the wrong thing to look at, the 005 NETWORK is the
 # right one; openirc.snt.utwente.nl never completes registration over TLS.
-Environment=IRC_HOST=irc.psychz.net
+Environment=IRC_HOST=open.ircnet.net
 Environment=IRC_TLS_VERIFY=0
 Environment=IRC_NICK=vjt-claude
 Environment=BOT_LOG=/home/vjt/code/IRC/vjt-claude/bot.ircnet.log
