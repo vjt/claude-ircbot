@@ -31,6 +31,7 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
   threaded, two concurrent sends would pair a marker with the wrong line
   (vjt's ruling, 2026-08-26: "tenere context su due righe no").
 """
+import base64
 import fnmatch
 import os
 import random
@@ -81,6 +82,14 @@ BIND = _cfg("IRC_BIND", "")
 # name that does not match the one we dial. There is nothing to protect on that
 # network anyway: no services, no NickServ, no password ever sent.
 TLS_VERIFY = _cfg("IRC_TLS_VERIFY", "1") not in ("0", "no", "off", "false")
+
+# SASL PLAIN with NickServ's account (NICK as account, NICKSERV_PASS as
+# password), done before registration completes. It exists for Libera, where
+# the user cloak only lands once we are identified: identifying to NickServ
+# after 001 shows the home IP in the meantime (vjt, 2026-11-06: "non voglio piu
+# leakare l'ip di casa"). If SASL fails we QUIT instead of registering in clear,
+# and systemd's backoff retries. Off by default: Azzurra's services lack SASL.
+SASL = _cfg("IRC_SASL", "0") not in ("0", "no", "off", "false")
 
 LOG = _cfg("BOT_LOG", os.path.join(HERE, "bot.log"))
 FIFO = _cfg("BOT_FIFO", os.path.join(HERE, "bot.send"))
@@ -477,6 +486,10 @@ def trust_reset(nick, reason):
 
 
 def _mask_secrets(line):
+    # The SASL PLAIN blob is the password, base64'd: mask it whole.
+    if line.startswith("AUTHENTICATE ") and line != "AUTHENTICATE PLAIN" \
+            and line != "AUTHENTICATE +":
+        return "AUTHENTICATE ********"
     if NICKSERV_PASS and NICKSERV_PASS in line:
         return line.replace(NICKSERV_PASS, "********")
     return line
@@ -862,6 +875,14 @@ def _reclaim_after_ghost():
         emit("NS_GHOST_RECLAIM", NICK)
 
 
+def _sasl_abort(why):
+    # Never fall back to registering unauthenticated: that is the leak SASL is
+    # here to prevent. Leave, and let systemd's backoff try again later.
+    emit("SASL_FAIL", why)
+    send_raw("QUIT :sasl failed")
+    sys.exit(1)
+
+
 def handle_server_line(line):
     global registered, ghost_needed, tmp_nick, me
     log("<", line)
@@ -898,7 +919,10 @@ def handle_server_line(line):
             whois_pending.add(tn)
             send_raw(f"WHOIS {tn}")
             emit("WHOIS_FIRED", tn)
-        if NICKSERV_PASS:
+        if SASL and not ghost_needed:
+            # Already logged in to our account before 001: nothing to IDENTIFY.
+            fire_startup("sasl")
+        elif NICKSERV_PASS:
             if ghost_needed:
                 # Our real nick is held (by our own ghost after a line drop):
                 # kill it from services, then reclaim + IDENTIFY (see below).
@@ -910,6 +934,25 @@ def handle_server_line(line):
                 emit("NS_IDENTIFY_SENT")
         else:
             fire_startup("no-nickserv-pass")
+        return
+    if cmd == "CAP" and SASL and not registered:
+        # ":srv CAP * ACK :sasl" / "NAK :sasl"
+        sub = rest.split()[1] if len(rest.split()) > 1 else ""
+        if sub == "ACK" and "sasl" in rest.split(" :", 1)[-1].split():
+            send_raw("AUTHENTICATE PLAIN")
+        elif sub == "NAK":
+            _sasl_abort("CAP NAK")
+        return
+    if cmd == "AUTHENTICATE" and SASL and rest.strip() == "+":
+        blob = f"{NICK}\0{NICK}\0{NICKSERV_PASS}".encode()
+        send_raw("AUTHENTICATE " + base64.b64encode(blob).decode())
+        return
+    if cmd == "903" and SASL:
+        emit("SASL_OK")
+        send_raw("CAP END")
+        return
+    if cmd in ("902", "904", "905", "906", "908") and SASL and not registered:
+        _sasl_abort(f"{cmd} {rest}")
         return
     if cmd == "005":
         # RPL_ISUPPORT: ":srv 005 <me> TOK TOK ... :are supported". The CHAL
@@ -1427,6 +1470,9 @@ def main():
     sock = ctx.wrap_socket(raw, server_hostname=HOST)
     sock.settimeout(420)
     emit("TLS_OK", HOST, PORT, "verify" if TLS_VERIFY else "NOVERIFY")
+    if SASL:
+        # Holds registration open until CAP END (sent on 903 only).
+        send_raw("CAP REQ :sasl")
     send_raw(f"NICK {NICK}")
     send_raw(f"USER {IDENT} 0 * :{REAL}")
 

@@ -10,6 +10,7 @@ WorkingDirectory=/home/vjt/code/IRC/vjt-claude
 # Same bot.py as Azzurra, re-pointed at Libera via env overrides. Defaults in
 # bot.py reproduce the Azzurra config, so ONLY the deltas are set here.
 Environment=IRC_HOST=irc.libera.chat
+Environment=IRC_SASL=1
 Environment=IRC_NICK=vjt-claude
 Environment=BOT_LOG=/home/vjt/code/IRC/vjt-claude/bot.libera.log
 Environment=BOT_FIFO=/home/vjt/code/IRC/vjt-claude/bot.send.libera
