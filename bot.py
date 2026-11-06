@@ -162,6 +162,8 @@ startup_fired = False
 # services, reclaim it, then IDENTIFY. (vjt 2026-07-20: "fatti un ghost on connect".)
 registered = False      # True once we've received 001 (registration complete)
 ghost_needed = False    # True while we hold a temp nick and still want NICK back
+ghost_tries = 0         # reclaims re-sent after a 433: services can be slower than the 4s beat
+GHOST_RECLAIM_MAX = 5
 tmp_nick = None         # the throwaway nick we fell back to
 me = NICK               # the nick the server knows us by: 001's <me>, then our own NICK echoes
 
@@ -875,6 +877,10 @@ def _reclaim_after_ghost():
         emit("NS_GHOST_RECLAIM", NICK)
 
 
+def _schedule_reclaim():
+    threading.Thread(target=_reclaim_after_ghost, daemon=True).start()
+
+
 def _sasl_abort(why):
     # Never fall back to registering unauthenticated: that is the leak SASL is
     # here to prevent. Leave, and let systemd's backoff try again later.
@@ -884,7 +890,7 @@ def _sasl_abort(why):
 
 
 def handle_server_line(line):
-    global registered, ghost_needed, tmp_nick, me
+    global registered, ghost_needed, ghost_tries, tmp_nick, me
     log("<", line)
     if line.startswith("PING "):
         send_raw("PONG " + line[5:])
@@ -928,7 +934,7 @@ def handle_server_line(line):
                 # kill it from services, then reclaim + IDENTIFY (see below).
                 send_raw(f"PRIVMSG NickServ :GHOST {NICK} {NICKSERV_PASS}")
                 emit("NS_GHOST_SENT", NICK)
-                threading.Thread(target=_reclaim_after_ghost, daemon=True).start()
+                _schedule_reclaim()
             else:
                 send_raw(f"PRIVMSG NickServ :IDENTIFY {NICKSERV_PASS}")
                 emit("NS_IDENTIFY_SENT")
@@ -970,8 +976,16 @@ def handle_server_line(line):
             # suffix so a second flap doesn't collide with the same temp.
             tmp_nick = f"{NICK}-{random.randint(100, 999)}"
             send_raw(f"NICK {tmp_nick}")
-            ghost_needed = True
+            ghost_needed, ghost_tries = True, 0
             emit("NICK_FALLBACK", tmp_nick)
+        elif ghost_needed and rest.split()[1:2] == [NICK]:
+            # Our reclaim beat the GHOST: Libera's services answered 6s after
+            # it on 2026-11-06, past the 4s beat. Try again, a few times.
+            if ghost_tries < GHOST_RECLAIM_MAX:
+                ghost_tries += 1
+                _schedule_reclaim()
+            else:
+                emit("NS_GHOST_GIVEUP", NICK)
         return
     if cmd in ("464", "465"):
         emit("AUTH_ERROR", cmd, rest)
@@ -1192,9 +1206,13 @@ def handle_server_line(line):
         if ghost_needed and new_nick.lower() == NICK.lower():
             # We just reclaimed the real nick after ghosting the stale one.
             # Now IDENTIFY on it (NickServ's "identified" NOTICE then fires the
-            # channel-join startup, so JOINs happen on the right nick).
+            # channel-join startup, so JOINs happen on the right nick). Under
+            # SASL we are logged in already, and atheme's "You are already
+            # logged in" would never fire it: start straight away.
             ghost_needed = False
-            if NICKSERV_PASS:
+            if SASL:
+                fire_startup("sasl")
+            elif NICKSERV_PASS:
                 send_raw(f"PRIVMSG NickServ :IDENTIFY {NICKSERV_PASS}")
                 emit("NS_IDENTIFY_SENT")
         return
