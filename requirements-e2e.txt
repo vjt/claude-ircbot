@@ -2,4 +2,4 @@
 # stdlib-only without it. irc-olm is pinned by commit (vjt/irc-olm main, the
 # squash merge of PR 4: wire v2, a master key and up to four devices per
 # user); it pins vodozemac==0.10.0 itself.
-irc-olm @ git+https://github.com/vjt/irc-olm@1606c8506df699b3102186c12a0402415814da46
+irc-olm @ git+https://github.com/vjt/irc-olm@8e64be53ce03ea5c44ae6ed9e438854ac1db3321
