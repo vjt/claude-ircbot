@@ -73,8 +73,11 @@ def _fold(nick: str) -> str:
 def _one_line(text: str) -> str:
     """Decrypted text as one event line. Unlike an IRC line it can carry CR,
     LF or NUL (which would forge a second event) and lone surrogates (which
-    print() refuses)."""
-    text = text.replace("\r", " ").replace("\n", " ").replace("\0", " ")
+    print() refuses). The line breaks are escaped, not dropped, so a
+    multi-line message keeps its lines: `\\n`, `\\r`, and `\\\\` for a
+    backslash, the escapes ESAY decodes (claude-ircbot#8)."""
+    text = (text.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+            .replace("\0", " "))
     return text.encode("utf-8", "replace").decode("utf-8")
 
 

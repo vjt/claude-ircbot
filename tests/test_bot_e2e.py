@@ -104,6 +104,24 @@ class BotE2ETest(unittest.TestCase):
             ("send_text", ("vjt", "saluta"), {"action": True, "origin": "tag"})])
         self.assertEqual(self.sent, [])
 
+    def test_esay_and_eact_decode_newline_and_backslash_escapes(self):
+        # The FIFO is one command per line: `\n` is how a multi-line encrypted
+        # message gets in, `\\` how a literal backslash survives (claude-ircbot#8).
+        bot.bridge = FakeBridge()
+        bot.run_cmd(r"ESAY vjt riga uno\nriga due \\n non va a capo \t resta")
+        bot.run_cmd(r"EACT vjt saluta\ne va")
+        self.assertEqual(bot.bridge.calls, [
+            ("send_text", ("vjt", "riga uno\nriga due \\n non va a capo \\t resta"),
+             {"action": False, "origin": None}),
+            ("send_text", ("vjt", "saluta\ne va"), {"action": True, "origin": None})])
+
+    def test_a_say_the_reply_mode_encrypts_keeps_backslashes_literal(self):
+        # Only ESAY/EACT decode: a SAY is plain text unless the bot happens to
+        # remember the conversation, and must read the same either way.
+        bot.bridge = FakeBridge(encrypt_to={"vjt"})
+        bot.run_cmd(r"SAY vjt C:\new")
+        self.assertEqual(bot.bridge.calls[-1][1], ("vjt", r"C:\new"))
+
     def test_esay_to_a_channel_is_refused(self):
         bot.bridge = FakeBridge()
         bot.run_cmd("ESAY #sbiffo segreto")
