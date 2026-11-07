@@ -307,7 +307,11 @@ that nick released as TRUSTED was encrypted, for an hour after it and only
 until the bot restarts. A plaintext PM switches it back only once it is
 released as TRUSTED (for a user with a pinned key, confirmed); one held or
 dropped changes nothing. Answer `ENCRYPTED=1` with `ESAY`/`EACT`, which do not
-depend on it. A message that cannot be delivered is `E2E_SEND_FAILED` with a
+depend on it. An encrypted message may span lines: in `ESAY`/`EACT` text `\n`
+is a line break and `\\` a backslash (any other backslash is sent as typed;
+`SAY`/`ACT` never decode, encrypted or not), and an `ENCRYPTED=1` body reaches
+the stream with the same escapes plus `\r`, one event line however many lines
+it had. A message that cannot be delivered is `E2E_SEND_FAILED` with a
 reason; `REASON=pacer-full` means the pacer has no room, and nothing was
 sent: 32 messages already wait for that nick (counting the ones refused behind
 them), or the 480 s of queued encrypted text all nicks share is full.

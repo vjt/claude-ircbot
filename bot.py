@@ -18,6 +18,8 @@ Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
     EACT <nick> <text>         whose key is pinned (needs BOT_E2E_KEY, see
                                e2e_bridge.py; never to a channel). SAY/ACT to
                                a nick whose last DM was encrypted encrypt too.
+                               In ESAY/EACT text `\\n` is a line break and
+                               `\\\\` a backslash.
 
   Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
   The tag changes NOTHING on the wire — it is only stamped into bot.log,
@@ -1288,6 +1290,13 @@ def _e2e_bound(verb, target):
         and not target.startswith(("#", "&")) and bridge.wants_encryption(target))
 
 
+def _e2e_unescape(text):
+    """ESAY/EACT text with `\\n` as a line break and `\\\\` as a backslash:
+    the FIFO is one command per line, the encrypted message need not be
+    (claude-ircbot#8). Any other backslash stays as typed."""
+    return re.sub(r"\\([\\n])", lambda m: "\n" if m.group(1) == "n" else "\\", text)
+
+
 def _redacted(line):
     """`line` as the event stream may show it. A command bound for an E2E
     query keeps its verb and target, never its text: encrypting it would be
@@ -1371,7 +1380,8 @@ def process_cmd(line):
         elif bridge is None:
             emit("CMD_ERROR", "e2e-off", verb, f"TO={target}", "BOT_E2E_KEY is not set")
         else:
-            bridge.send_text(target, rest.split(" ", 1)[1], action=verb == "EACT", origin=origin)
+            bridge.send_text(target, _e2e_unescape(rest.split(" ", 1)[1]),
+                             action=verb == "EACT", origin=origin)
     elif verb == "SAY":
         if " " not in rest:
             emit("CMD_ERROR", "SAY needs <target> <text>", repr(rest))
