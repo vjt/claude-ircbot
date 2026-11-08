@@ -1,0 +1,37 @@
+[Unit]
+Description=vjt-ds4 idle / turns / AUP watchdog (second aup_watchdog instance)
+Documentation=https://github.com/vjt/claude-ircbot
+After=default.target
+
+# vjt-ds4 runs as the restricted user ds4, inside vjt's tmux (window ds4, pane 0,
+# started with `sudo -u ds4 -i`, so the pane shows `sudo`, not `claude`). This
+# instance runs as vjt because the tmux server is vjt's; it reads ds4's
+# transcripts through a read-only ACL for vjt on that one project directory
+# (ds4's settings.json, with the endpoint token, stays 600 and unreadable).
+# One-time setup, as root:
+#   setfacl -m u:vjt:x /home/ds4 /home/ds4/.claude /home/ds4/.claude/projects
+#   setfacl -R -m u:vjt:rX  /home/ds4/.claude/projects/-home-ds4-claude-ircbot
+#   setfacl -d -m u:vjt:rX  /home/ds4/.claude/projects/-home-ds4-claude-ircbot
+# Escalations and forced-clear notices go to vjt through vjt-claude's FIFO.
+# ds4 has no memory/ tree: its handoff across a /clear is NOTES.md in its clone.
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vjt/code/IRC/vjt-claude
+Environment=WATCHDOG_PROJECT_DIR=/home/ds4/.claude/projects/-home-ds4-claude-ircbot
+Environment=WATCHDOG_WINDOW=ds4
+Environment=WATCHDOG_PANE_CMD=sudo
+Environment=WATCHDOG_PANE_INDEX=0
+Environment=WATCHDOG_ANNOUNCE_TO=vjt
+Environment=WATCHDOG_LABEL=watchdog-ds4
+# Claude Code writes each new transcript 0600 (ACL mask ---): ds4 raises the mask.
+Environment=WATCHDOG_GRANT_AS=ds4
+Environment="WATCHDOG_PRE_CLEAR_PROMPT=WATCHDOG NOTICE: a /clear will fire in 15 seconds. Write your in-flight state NOW to /home/ds4/claude-ircbot/NOTES.md (overwrite it): open PRs and where each stands, orders received and from whom, what you were doing, what you are waiting for. Do not reply on IRC. Write only."
+Environment="WATCHDOG_SCRUB_PROMPT=Resumed after a /clear: do the Startup section of your CLAUDE.md (attach the Monitor), then read /home/ds4/claude-ircbot/NOTES.md and carry on from there. Do not announce the resume on IRC."
+ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/aup_watchdog.py
+Restart=on-failure
+RestartSec=5
+# journalctl --user-unit vjt-claude-ds4-watchdog.service -f
+
+[Install]
+WantedBy=default.target

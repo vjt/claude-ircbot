@@ -17,11 +17,16 @@ session-agnostic via `tmux list-panes -a`) on three independent triggers:
 All triggers share the same cooldown window, so back-to-back clears
 never stack. Nothing here runs claude itself — it only kicks the pane.
 
+One instance per session. The defaults are vjt-claude's; a second session
+(vjt-ds4, 2026-11-08) runs its own instance with the WATCHDOG_* environment
+variables below overriding where it reads, which pane it kicks and what it says.
+
 (Original AUP-only script; extended 2026-04-19 with the idle trigger
 per vjt's request to also free KV on quiet periods.)
 """
 
 import json
+import os
 import re
 import signal
 import subprocess
@@ -29,11 +34,25 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_DIR = Path.home() / ".claude/projects/-home-vjt-code-IRC-vjt-claude"
-TMUX_WINDOW_NAME = "ircbot"  # window name only — session-agnostic
-BOT_FIFO = Path("/home/vjt/code/IRC/vjt-claude/bot.send")
-ESCALATE_NICK = "vjt"        # SAY target when resolve stays broken
-FORCED_CLEAR_CHAN = "#sbiffo"  # where a refusal/AUP clear is announced (vjt, 2026-10-29)
+_env = os.environ.get
+
+PROJECT_DIR = Path(_env("WATCHDOG_PROJECT_DIR",
+                        str(Path.home() / ".claude/projects/-home-vjt-code-IRC-vjt-claude")))
+TMUX_WINDOW_NAME = _env("WATCHDOG_WINDOW", "ircbot")  # window name only — session-agnostic
+# The pane is the one in that window whose foreground command is PANE_CMD. A
+# session started through `sudo -u <user> -i` shows `sudo`, not `claude`, and
+# then a shell started the same way in the same window looks identical:
+# WATCHDOG_PANE_INDEX pins which pane of the window it is.
+PANE_CMD = _env("WATCHDOG_PANE_CMD", "claude")
+PANE_INDEX = _env("WATCHDOG_PANE_INDEX")  # None = any pane of the window
+BOT_FIFO = Path(_env("WATCHDOG_FIFO", "/home/vjt/code/IRC/vjt-claude/bot.send"))
+ESCALATE_NICK = _env("WATCHDOG_ESCALATE_NICK", "vjt")  # SAY target when resolve stays broken
+# where a refusal/AUP clear is announced (vjt, 2026-10-29)
+FORCED_CLEAR_CHAN = _env("WATCHDOG_ANNOUNCE_TO", "#sbiffo")
+LABEL = _env("WATCHDOG_LABEL", "watchdog")  # prefix of every IRC line it sends
+# Set when the transcripts belong to another user, readable through a default
+# ACL on PROJECT_DIR: see grant_read().
+GRANT_AS = _env("WATCHDOG_GRANT_AS")
 
 POLL_SEC = 2
 DEBOUNCE_SEC = 60           # any clear — AUP / idle / turns — holds this window
@@ -61,16 +80,17 @@ IDLE_MIN_TURNS = 30         # skip IDLE fire unless this many assistant turns ac
                             # post-bootstrap lull cycles /clear forever on sessions
                             # that are just waiting for their next IRC message.
 
-SCRUB_PROMPT = "/resume"  # warm-resume skill (lean); cold boot still uses /start
+# warm-resume skill (lean); cold boot still uses /start
+SCRUB_PROMPT = _env("WATCHDOG_SCRUB_PROMPT", "/resume")
 
-PRE_CLEAR_PROMPT = (
+PRE_CLEAR_PROMPT = _env("WATCHDOG_PRE_CLEAR_PROMPT", (
     "WATCHDOG NOTICE: a /clear will fire in 15 seconds. "
     "Persist any in-flight conversational state to disk NOW: "
     "pending IRC requests, messages-to-relay, partial work, "
     "new standing orders, lessons learned. "
     "Use memory/ for long-term, project_activity_log.md for ephemera. "
     "Do not reply on IRC unless mid-sentence. Write only."
-)
+))
 
 STUCK_PATTERNS = re.compile(
     r"(unable to respond to this request|appears to violate our Usage Policy|Usage Policy"
@@ -133,14 +153,24 @@ def latest_jsonl() -> Path | None:
     return candidates[0] if candidates else None
 
 
+def grant_read(path: Path) -> None:
+    """Claude Code creates each transcript 0600, which zeroes the ACL mask and
+    with it the read grant inherited from PROJECT_DIR's default ACL. The owner
+    can raise the mask again; nothing is granted beyond that default entry."""
+    if GRANT_AS:
+        subprocess.run(["sudo", "-n", "-u", GRANT_AS, "setfacl", "-m", "m::r", str(path)],
+                       check=False)
+
+
 def resolve_claude_pane() -> str | None:
     """Find the pane where window_name == TMUX_WINDOW_NAME AND
-    pane_current_command == 'claude'. NO fallback — there are multiple
-    claude panes in this tmux server, only the ircbot window counts."""
+    pane_current_command == PANE_CMD (and pane_index == PANE_INDEX when set).
+    NO fallback — there are multiple claude panes in this tmux server, only
+    the configured window counts."""
     try:
         out = subprocess.check_output(
             ["tmux", "list-panes", "-a", "-F",
-             "#{window_name}\t#{pane_current_command}\t#{pane_id}"],
+             "#{window_name}\t#{pane_current_command}\t#{pane_index}\t#{pane_id}"],
             text=True,
         )
     except subprocess.CalledProcessError as e:
@@ -149,13 +179,14 @@ def resolve_claude_pane() -> str | None:
     matches: list[str] = []
     for line in out.splitlines():
         parts = line.strip().split("\t")
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
-        win, cmd, pid = parts
-        if win == TMUX_WINDOW_NAME and cmd == "claude":
+        win, cmd, idx, pid = parts
+        if (win == TMUX_WINDOW_NAME and cmd == PANE_CMD
+                and (PANE_INDEX is None or idx == PANE_INDEX)):
             matches.append(pid)
     if not matches:
-        log(f"no pane with window={TMUX_WINDOW_NAME!r} cmd=claude")
+        log(f"no pane with window={TMUX_WINDOW_NAME!r} cmd={PANE_CMD} index={PANE_INDEX}")
         return None
     if len(matches) > 1:
         log(f"multiple candidate panes {matches} — picking first")
@@ -360,8 +391,8 @@ def fire_clear(reason: str, warn: bool = True, announce: bool = False) -> bool:
             and now - fail_since >= RESOLVE_ALERT_SEC
         ):
             msg = (
-                f"watchdog: can't find claude pane "
-                f"(window={TMUX_WINDOW_NAME}, cmd=claude) for "
+                f"{LABEL}: can't find claude pane "
+                f"(window={TMUX_WINDOW_NAME}, cmd={PANE_CMD}) for "
                 f"{int(now - fail_since)}s — /clear injection stalled ({reason})"
             )
             log(f"ESCALATING to {ESCALATE_NICK}: {msg}")
@@ -372,7 +403,7 @@ def fire_clear(reason: str, warn: bool = True, announce: bool = False) -> bool:
     if _resolve_state["alerted"]:
         send_fifo_say(
             ESCALATE_NICK,
-            f"watchdog: pane resolved again ({pane}) — back to normal",
+            f"{LABEL}: pane resolved again ({pane}) — back to normal",
         )
     _resolve_state["fail_since"] = 0.0
     _resolve_state["alerted"] = False
@@ -390,7 +421,7 @@ def fire_clear(reason: str, warn: bool = True, announce: bool = False) -> bool:
     if announce:
         send_fifo_say(
             FORCED_CLEAR_CHAN,
-            f"watchdog: /clear forzato ({reason}), la sessione era bloccata "
+            f"{LABEL}: /clear forzato ({reason}), la sessione era bloccata "
             f"dal filtro. Se ho perso il filo di qualcosa, ripetetemelo.",
         )
     if inject_scrub(pane):
@@ -422,6 +453,7 @@ def main() -> int:
                 continue
 
             if latest != current_file:
+                grant_read(latest)
                 if first_attach:
                     current_pos = latest.stat().st_size
                     log(f"tailing {latest.name} from offset {current_pos} (skipping history)")
