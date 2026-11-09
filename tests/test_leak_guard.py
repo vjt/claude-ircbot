@@ -51,6 +51,27 @@ class LeakGuardTest(unittest.TestCase):
         self.azz.record("#it-opers", "la petizione per Sonic la facciamo domani")
         self.assertIsNone(self.azz.check("#grappa", "la petizione per Sonic"))
 
+    def test_shared_url_prefix_passes(self):
+        # 2026-11-09: one issue link said in #it-opers blocked every other
+        # issue link for 24h — "github com vjt grappa irc issues" is a 6-gram.
+        self.azz.record("#it-opers", "guardate https://github.com/vjt/grappa-irc/issues/2641 rotto")
+        self.assertIsNone(self.lib.check(
+            "#grappa", "aperta https://github.com/vjt/grappa-irc/issues/2642"))
+
+    def test_same_url_blocked_any_spelling(self):
+        # A secret gist URL is a credential: the URL alone is the leak.
+        self.azz.record("#it-opers", "eccolo: https://gist.github.com/vjt/0a1b2c3d4e5f.")
+        for text in ("gist.github.com/vjt/0a1b2c3d4e5f",
+                     "(https://GIST.github.com/vjt/0a1b2c3d4e5f)",
+                     "http://www.gist.github.com/vjt/0a1b2c3d4e5f/"):
+            r = self.lib.check("#grappa", text)
+            self.assertTrue(r and r.startswith("words:"), text)
+
+    def test_words_around_url_still_count(self):
+        self.azz.record("#it-opers", "dump su https://a.example/x e domani lo cancello senza dirlo")
+        r = self.lib.check("#grappa", "vedi https://b.example/y e domani lo cancello senza dirlo")
+        self.assertTrue(r and r.startswith("words:"))
+
     def test_record_ignores_non_reserved(self):
         self.azz.record("#grappa", "uno due tre quattro cinque sei sette")
         self.assertIsNone(self.azz.check("#sbiffo", "uno due tre quattro cinque sei sette"))

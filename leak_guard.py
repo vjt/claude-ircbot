@@ -42,13 +42,43 @@ _WORD = re.compile(r"\w+", re.UNICODE)
 _FORMAT = re.compile(r"\x03(\d{1,2}(,\d{1,2})?)?|[\x02\x0f\x16\x1d\x1f]")
 
 
+# A URL is one token, not the 6+ words its host and path split into: two links
+# to the same repo share "github com vjt grappa irc issues", and on 2026-11-09
+# one issue link said in a reserved channel blocked every other for 24h.
+# Bare `host.tld/path` too, the way links get typed on IRC.
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+|(?:[\w-]+\.)+[a-z]{2,}/\S*", re.IGNORECASE)
+_URL_TAIL = ".,;:!?)]}>\"'»"
+
+
+def _url_token(url):
+    """Same link however it is spelled: no scheme, no www., no trailing slash.
+
+    The `url:` prefix cannot come out of `_WORD`, so shingles() can tell these
+    tokens apart.
+    """
+    u = re.sub(r"^[a-z][a-z0-9+.-]*://", "", url.lower().rstrip(_URL_TAIL))
+    return "url:" + u.removeprefix("www.").rstrip("/")
+
+
 def tokens(text):
-    return _WORD.findall(_FORMAT.sub("", text).lower())
+    text = _FORMAT.sub("", text)
+    out, pos = [], 0
+    for m in _URL.finditer(text):
+        out += _WORD.findall(text[pos:m.start()].lower())
+        out.append(_url_token(m.group(0)))
+        pos = m.end()
+    return out + _WORD.findall(text[pos:].lower())
 
 
 def shingles(text, n=NGRAM):
+    """Every run of `n` tokens, plus every URL on its own.
+
+    A URL alone is a match: a secret gist link is a credential, and the line
+    that leaks it is often nothing but the link.
+    """
     t = tokens(text)
-    return {" ".join(t[i:i + n]) for i in range(len(t) - n + 1)}
+    grams = {" ".join(t[i:i + n]) for i in range(len(t) - n + 1)}
+    return grams | {w for w in t if w.startswith("url:")}
 
 
 def load_reserved(path):
