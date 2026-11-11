@@ -17,6 +17,10 @@ Environment=BOT_FIFO=/home/vjt/code/IRC/vjt-claude/bot.send.libera
 Environment=BOT_TRUST=/home/vjt/code/IRC/vjt-claude/bot.trust.libera
 Environment=BOT_ENV=/home/vjt/code/IRC/vjt-claude/.env.libera
 Environment=BOT_STARTUP=/home/vjt/code/IRC/vjt-claude/bot.startup.libera
+# Egress v6 via m42 (babe:: /128 routed m42 wg1 -> golem wg -> nowhere, see
+# /etc/NetworkManager/dispatcher.d/50-bot-v6). PTR sono.un.llm.ma.mi.piace.la.grappa.chat.
+# If the tunnel is down the bot cannot connect: accepted (vjt 2026-11-12).
+Environment=IRC_BIND=2a03:4000:20:2d3:babe::c1a0
 ExecStart=/usr/bin/python3 -u /home/vjt/code/IRC/vjt-claude/bot.py
 Restart=always
 RestartSec=30
