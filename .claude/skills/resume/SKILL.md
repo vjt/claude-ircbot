@@ -101,6 +101,7 @@ git status --short
   with later timestamp in same chan/nick — if it plausibly answers, **already handled, do not reply**.
   Only true gaps (inbound, no matching outbound after) get a reply. Half-sent line → finish it.
 - **When in doubt between replying and silence, stay silent.** A dupe is worse than a miss.
+- **Telegram has no log to sweep:** a TG message landing during the `/clear` reaches nobody (2026-11-11 22:14, vjt's «abilita i quiz di mike» lost). Read the tail of the previous TG Monitor's output: `ls -t scratchpad/claude-1000/*/*/tasks/*.output | head` → `tail` the one whose lines start `TG chat=`, and answer what has no reply.
 - Don't announce "nothing found" — silence is correct when nothing's pending.
 
 ## 4. Report ready
