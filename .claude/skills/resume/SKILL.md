@@ -79,10 +79,14 @@ For EACH stream independently:
   eventi così puoi reagire»). The `siem-*` systemd user timers (`/srv/siem/systemd/`, scripts in `/srv/siem/alarms/`) DM vjt and append each alert to
   `~/.local/state/m42-alarms.log`; this lets me see them too and act (investigate on m42, tell vjt):
   ```
-  Monitor: command: tail -n0 -F /home/vjt/.local/state/m42-alarms.log /home/vjt/.local/state/pf-alarm.err /home/vjt/.local/state/mail-auth-alarm.err 2>/dev/null | grep --line-buffered -v '^==> '
+  Monitor: command: tail -n0 -F /home/vjt/.local/state/m42-alarms.log /home/vjt/.local/state/pf-alarm.err /home/vjt/.local/state/mail-auth-alarm.err 2>/dev/null | /usr/bin/grep --line-buffered -v -e '^==> ' -e '^$'
            persistent: true, timeout_ms: 3600000
            description: "m42 security alarms (pf + mail auth) and alarm script errors"
   ```
+  **`/usr/bin/grep`, never bare `grep`:** in an inline Monitor command the shell snapshot turns
+  `grep` into the bundled `ugrep`, which on a `tail -F` pipe passes the blank lines and **eats the
+  content lines** — measured 2026-11-12, the m42 alarms of 13:00 and 13:50 never arrived.
+  Scripts (`start-monitor*.sh`, `tg_poll.sh`) are not affected: they get the real grep.
 - Any service not `active` → `systemctl --user start <svc>` (linger means they usually survive).
 
 ## 3. WIP sweep — resume only true gaps
