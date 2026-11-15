@@ -64,7 +64,7 @@ IDLE_ENABLED = True         # idle trigger re-enabled 2026-06-28 per vjt (was di
                             # activity-log + scrub + sweep) to drop context that,
                             # while idle, costs zero tokens. Turns guards real
                             # bloat; AUP + SIGUSR1 cover recovery.
-IDLE_SEC = 900              # 15 min of no jsonl writes = idle (1.5x, 2026-06-28)
+IDLE_SEC = 3600             # 1 h = prompt-cache TTL: past it the context is cold anyway (2026-11-13)
 MAX_TURNS = 150             # assistant turns since last clear → eager clear (1.5x, 2026-06-28)
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
 PRE_CLEAR_WARN_SEC = 15     # grace window between warning prompt and /clear
