@@ -1,0 +1,6 @@
+[Unit]
+Description=Inject the next-day kazam workout prompt into the vjt-claude tmux pane
+
+[Service]
+Type=oneshot
+ExecStart=/home/vjt/code/IRC/vjt-claude/tools/cron-kazam-wod-trigger.sh

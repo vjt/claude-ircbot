@@ -1,0 +1,8 @@
+[Unit]
+Description=kazam workout card, evening before Tue/Thu/Sat (order kazam 2026-11-17)
+
+[Timer]
+OnCalendar=Mon,Wed,Fri *-*-* 16:30:00 Europe/Rome
+
+[Install]
+WantedBy=timers.target
