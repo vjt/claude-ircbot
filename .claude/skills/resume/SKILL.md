@@ -37,7 +37,10 @@ events and vice-versa) plus **Telegram** (`@gazzurbo_bot` long-poller, a differe
 entirely). The `tail -F` pipelines survive `/clear`; the Monitor task registrations do not.
 **Handle ALL THREE.** Libera and Telegram are the easy-to-forget ones — their processes often
 do NOT survive, so you usually attach them fresh even when Azzurra's got adopted.
-(IRCnet: quittato e unit disabilitata il 2026-11-03, ordine vjt — niente monitor.)
+**+ IRCnet** (3° bot, rientrato 2026-11-21, solo #disagio, tutto UNTRUSTED): pgrep
+`tail -F.*vjt-claude/bot.ircnet.stdout.log`; nessun hit → Monitor
+`bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor-ircnet.sh`
+(persistent, 3600000, "IRCnet bot events (#disagio, all UNTRUSTED)"); svc `vjt-claude-ircnet-bot.service`.
 
 ```bash
 pgrep -af "tail -F.*vjt-claude/bot.stdout.log"          # Azzurra
