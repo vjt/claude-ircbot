@@ -22,7 +22,7 @@ This >14d archive sweep is the one thing `/resume` deliberately skips (the log i
 
 **Then lint the memory index (cold-only):** run `bash memory/check-index.sh`. It reports MEMORY.md byte budget, over-length index lines, dead pointers, and true orphans (files neither indexed nor `[[linked]]`). If it flags anything, fix per `feedback_memory_anti_clutter` — trim fat descriptions to hooks, group rosters into one pointer, index/link orphans. MEMORY.md is auto-loaded every session and the loader truncates it past ~24.4KB, so keeping it lean is what stops silent index loss.
 
-## 2. Ensure all three services are up — systemd --user (cold-only)
+## 2. Ensure all four services are up — systemd --user (cold-only)
 
 As of 2026-04-20 **bot.py plus the watchdog sidecar** run as systemd user services with `loginctl enable-linger vjt`, so they auto-start at boot, auto-restart on crash, decoupled from Claude Code lifecycle.
 
@@ -32,12 +32,12 @@ As of 2026-04-20 **bot.py plus the watchdog sidecar** run as systemd user servic
 Unit files live in-repo at `systemd/`, copied into `~/.config/systemd/user/`. Check and (idempotently) start:
 
 ```bash
-systemctl --user is-active vjt-claude-bot.service vjt-claude-libera-bot.service vjt-claude-aup-watchdog.service
+systemctl --user is-active vjt-claude-bot.service vjt-claude-libera-bot.service vjt-claude-ircnet-bot.service vjt-claude-aup-watchdog.service
 # any not "active":
-systemctl --user start vjt-claude-bot.service vjt-claude-libera-bot.service vjt-claude-aup-watchdog.service
+systemctl --user start vjt-claude-bot.service vjt-claude-libera-bot.service vjt-claude-ircnet-bot.service vjt-claude-aup-watchdog.service
 ```
 
-Nothing to mkfifo / nohup / pgrep — systemd owns all three. Structured logs via `journalctl --user -u <service>`.
+Nothing to mkfifo / nohup / pgrep — systemd owns all four. Structured logs via `journalctl --user -u <service>`.
 
 ## 3. Greet on own JOIN (cold-only)
 

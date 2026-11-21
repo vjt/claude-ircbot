@@ -441,11 +441,13 @@ stays is the bridge and the sidecars that serve *this* session.
 
 ### systemd
 
-`systemd/` ships three user units — two bot instances
+`systemd/` ships four user units — three bot instances
 (`vjt-claude-bot.service` for Azzurra, `vjt-claude-libera-bot.service` for
-Libera.Chat) and the `aup-watchdog` sidecar. Drop (or
-symlink) the unit files into `~/.config/systemd/user/` and enable what
-you want:
+Libera.Chat, `vjt-claude-ircnet-bot.service` for IRCnet) and the
+`aup-watchdog` sidecar. Drop (or symlink) the unit files into
+`~/.config/systemd/user/` and enable what you want. Encrypted queries are
+switched on per unit by a drop-in that holds the key and so never enters the
+repo: `systemd/e2e.conf.example` is the template.
 
 ```bash
 systemctl --user enable --now vjt-claude-bot.service

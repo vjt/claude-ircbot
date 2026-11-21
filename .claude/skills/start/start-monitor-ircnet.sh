@@ -9,8 +9,9 @@
 # The IRCnet bot is a THIRD process (same bot.py, own nick/FIFO/logs) — so it
 # needs its OWN Monitor; the Azzurra and Libera Monitors never see these events.
 #
-# Expect every MSG here to arrive UNTRUSTED: IRCnet runs no services, so nobody
-# can be verified and bot.trust.ircnet is empty by design.
+# IRCnet runs no services, so nobody is verified by nick and bot.trust.ircnet is
+# empty by design: plain text arrives UNTRUSTED. Only E2E counts here —
+# MSG TRUSTED ENCRYPTED=1 / CONFIRMED=1 from a pinned key (drop-in e2e.conf).
 
 stdbuf -oL tail -F -n 0 /home/vjt/code/IRC/vjt-claude/bot.ircnet.stdout.log | \
   grep --line-buffered -E '^(\[[0-9]{2}:[0-9]{2}\] )?(MSG|JOIN|PART|QUIT|NICK_CHANGE|INVITE|NOTICE|KICK|CTCP|IDLE|IRC_ERROR|TRUST_DENIED|NICK_ERROR|AUTH_ERROR|NS_IDENTIFY_FAIL|SERVER_ERROR|CMD_ERROR|LEAK_BLOCKED|E2E_KEY_ALARM|E2E_SEND_FAILED|E2E_PINS_ERROR|ORDER_ACK_REJECTED) ' | \

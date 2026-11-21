@@ -1,0 +1,17 @@
+# Drop-in that turns on end-to-end encrypted queries for one bot unit.
+#
+# Copy to ~/.config/systemd/user/<unit>.service.d/e2e.conf, fill in, then
+# `systemctl --user daemon-reload && systemctl --user restart <unit>`.
+#
+# It stays OUT of the repo on purpose: BOT_E2E_KEY is the Olm pickle key, a
+# secret. See README "End-to-end encrypted queries" for the pins file and for
+# keeping the key and the state out of the Claude session's reach.
+
+[Service]
+# irc_olm lives in a venv, not in the system python the units default to.
+ExecStart=
+ExecStart=/path/to/venv/bin/python -u /path/to/claude-ircbot/bot.py
+Environment=BOT_E2E_KEY=<olm pickle key>
+# One fixed id per network: the state file is bound to it and named after it.
+Environment=BOT_E2E_NETWORK=<azzurra|libera|ircnet>
+Environment=BOT_E2E_PINS=/path/to/e2e.<network>.pins

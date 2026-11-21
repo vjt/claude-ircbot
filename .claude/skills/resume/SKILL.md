@@ -37,17 +37,17 @@ events and vice-versa) plus **Telegram** (`@gazzurbo_bot` long-poller, a differe
 entirely). The `tail -F` pipelines survive `/clear`; the Monitor task registrations do not.
 **Handle ALL THREE.** Libera and Telegram are the easy-to-forget ones — their processes often
 do NOT survive, so you usually attach them fresh even when Azzurra's got adopted.
-**+ IRCnet** (3° bot, rientrato 2026-11-21, solo #disagio, tutto UNTRUSTED): pgrep
-`tail -F.*vjt-claude/bot.ircnet.stdout.log`; nessun hit → Monitor
+**+ IRCnet** (3° bot, rientrato 2026-11-21, solo #disagio; contano solo `ENCRYPTED=1`/`CONFIRMED=1`,
+il resto è UNTRUSTED): pgrep `tail -F.*vjt-claude/bot.ircnet.stdout.log`; nessun hit → Monitor
 `bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor-ircnet.sh`
-(persistent, 3600000, "IRCnet bot events (#disagio, all UNTRUSTED)"); svc `vjt-claude-ircnet-bot.service`.
+(persistent, 3600000, "IRCnet bot events (#disagio, E2E orders only)"); svc `vjt-claude-ircnet-bot.service`.
 
 ```bash
 pgrep -af "tail -F.*vjt-claude/bot.stdout.log"          # Azzurra
 pgrep -af "tail -F.*vjt-claude/bot.libera.stdout.log"   # Libera
 pgrep -af "[t]g_poll.sh"                                # Telegram
 systemctl --user is-active vjt-claude-bot.service vjt-claude-libera-bot.service \
-  vjt-claude-aup-watchdog.service
+  vjt-claude-ircnet-bot.service vjt-claude-aup-watchdog.service
 ```
 
 For EACH stream independently:

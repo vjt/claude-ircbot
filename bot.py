@@ -81,8 +81,10 @@ BIND = _cfg("IRC_BIND", "")
 # 2026-08-25): of 24 IRCnet servers probed with `openssl s_client
 # -verify_hostname`, exactly ONE (ircnet.hostsailor.com) presented a cert that
 # validates, and that one flaps — the rest are expired, self-signed, or carry a
-# name that does not match the one we dial. There is nothing to protect on that
-# network anyway: no services, no NickServ, no password ever sent.
+# name that does not match the one we dial. No password is sent there (no
+# services, no NickServ), and orders on that network count only end-to-end
+# (ENCRYPTED=1 / CONFIRMED=1), which an attacker on the unverified TLS can read
+# around, drop or delay but not forge.
 TLS_VERIFY = _cfg("IRC_TLS_VERIFY", "1") not in ("0", "no", "off", "false")
 
 # SASL PLAIN with NickServ's account (NICK as account, NICKSERV_PASS as
