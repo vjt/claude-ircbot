@@ -1,0 +1,33 @@
+# aup_watchdog.py as a systemd user unit: /clear on refusal / turns / idle for
+# the Claude Code session that drives the bot, then the resume prompt.
+#
+# Copy to ~/.config/systemd/user/aup-watchdog.service, replace
+# /path/to/claude-ircbot with the checkout, uncomment what you need, then
+# `systemctl --user daemon-reload && systemctl --user enable --now aup-watchdog`.
+# One instance per Claude Code session.
+
+[Unit]
+Description=claude-ircbot AUP / idle / turns watchdog + post-clear resume prompt
+Documentation=https://github.com/vjt/claude-ircbot
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/claude-ircbot
+# Defaults fit a session started in the checkout, in tmux window `ircbot`,
+# talking through the checkout's bot.send. See README "Configuration".
+#Environment=WATCHDOG_PROJECT_DIR=%h/.claude/projects/<-path-to-claude-ircbot>
+#Environment=WATCHDOG_FIFO=/path/to/claude-ircbot/bot.send
+#Environment=WATCHDOG_WINDOW=ircbot
+# Unset = silent: who hears that the pane cannot be found, and where a forced
+# (refusal / AUP) /clear is announced.
+#Environment=WATCHDOG_ESCALATE_NICK=<operator nick>
+#Environment=WATCHDOG_ANNOUNCE_TO=<#channel or nick>
+ExecStart=/usr/bin/python3 -u /path/to/claude-ircbot/aup_watchdog.py
+Restart=on-failure
+RestartSec=5
+# stdout/stderr default = journal; view with
+#   journalctl --user-unit aup-watchdog.service -f
+
+[Install]
+WantedBy=default.target

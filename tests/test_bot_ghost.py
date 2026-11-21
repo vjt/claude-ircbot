@@ -8,8 +8,12 @@ import unittest
 TMP = tempfile.mkdtemp()
 for var, name in (("BOT_LOG", "bot.log"), ("BOT_FIFO", "bot.send"), ("BOT_TRUST", "bot.trust"),
                   ("BOT_ENV", "missing.env"), ("BOT_STARTUP", "bot.startup"),
-                  ("BOT_RESERVED_STORE", "reserved.tsv")):
+                  ("BOT_RESERVED", "bot.reserved"), ("BOT_RESERVED_STORE", "reserved.tsv")):
     os.environ[var] = os.path.join(TMP, name)
+# No defaults for these in bot.py; the same values as tests/test_bot_e2e.py,
+# whichever of the two imports bot first.
+os.environ["IRC_HOST"] = "irc.example.net"
+os.environ["IRC_NICK"] = "claude-bot"
 os.environ.pop("BOT_E2E_KEY", None)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

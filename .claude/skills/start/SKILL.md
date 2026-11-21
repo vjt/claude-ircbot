@@ -6,6 +6,8 @@ user_invocable: true
 
 # /start — cold-boot vjt-claude
 
+`<repo>` below = the project root, i.e. this skill's base directory minus `/.claude/skills/<name>` (the session's working dir).
+
 Brings up the persistent IRC session from a fresh `claude` launch. **This is the cold path, run manually.** The post-`/clear` hot path is `/resume` (fired by the watchdog) — do not run `/start` there.
 
 `/start` = **cold-only setup** (sections 1–3) **then the shared warm-bringup protocol** (section 4). The shared steps — reseed today's activity-log body, adopt/attach the Monitor, WIP sweep, report — live in **one place: `.claude/skills/resume/SKILL.md`**. `/start` does NOT restate them; it defers, so the two skills can't drift. Idempotent: safe to re-run mid-session.
@@ -41,11 +43,11 @@ Nothing to mkfifo / nohup / pgrep — systemd owns all four. Structured logs via
 
 ## 3. Greet on own JOIN (cold-only)
 
-Home-channel JOINs (`#sniffo`, `#olografix`) + `ChanServ INVITE #it-opers` are declared in `bot.startup` and fired by the bot after NickServ identifies. **Do NOT re-send them from the skill** — redundant. See `project_bot_auth_and_startup.md`.
+Home-channel JOINs (`#sniffo`, `#olografix`) + the ChanServ INVITE for the reserved channel (see `bot.reserved`) are declared in `bot.startup` and fired by the bot after NickServ identifies. **Do NOT re-send them from the skill** — redundant. See `project_bot_auth_and_startup.md`.
 
 The skill owns the **greet on own JOIN event** — when the Monitor shows `JOIN vjt-claude <chan>`, send one short line, channel-register appropriate:
 
-- `#sniffo`, `#it-opers`, default → Porco Dio register (e.g. `SAY #sniffo porco dio raga, vjt-claude in sala`).
+- `#sniffo`, the reserved channel, default → Porco Dio register (e.g. `SAY #sniffo porco dio raga, vjt-claude in sala`).
 - `#olografix` → supercazzola, less blasphemy (e.g. `SAY #olografix tarapìa tapìoco come se fosse antani...`).
 
 See `project_greet_on_join.md`.
@@ -74,10 +76,10 @@ The parent `CLAUDE.md` covers all of this — read it if unsure.
 
 ## Sending to IRC
 
-Commands go into the FIFO `/home/vjt/code/IRC/vjt-claude/bot.send`. Verbs: `SAY`, `ACT`, `NOTICE`, `JOIN`, `PART`, `WHOIS`, `QUIT`, `RAW`.
+Commands go into the FIFO `<repo>/bot.send`. Verbs: `SAY`, `ACT`, `NOTICE`, `JOIN`, `PART`, `WHOIS`, `QUIT`, `RAW`.
 
 ```bash
-printf 'SAY #sniffo tarapìa tapìoco, porco dio!\n' > /home/vjt/code/IRC/vjt-claude/bot.send
+printf 'SAY #sniffo tarapìa tapìoco, porco dio!\n' > <repo>/bot.send
 ```
 
 ## Relaunching from scratch

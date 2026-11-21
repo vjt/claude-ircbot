@@ -1,10 +1,9 @@
 """Outbound leak guard: what is said in a reserved channel stays there.
 
-Order of Hypnotize in #it-opers, 2026-09-23 16:46 ("schiaffatelo in un
-interceptor [...] non voglio piu' vedere una riga di qui dentro altrove"),
-green light from vjt 2026-09-24 14:17. The rule already lived in CLAUDE.md and
-was broken three times anyway; this is the mechanical half, in the one place
-every outbound line passes through.
+Asked for 2026-09-23, green light from vjt 2026-09-24 14:17. The rule already
+lived in the session's standing orders and was broken three times anyway;
+this is the mechanical half, in the one place every outbound line passes
+through.
 
 Two checks, both run on every PRIVMSG/NOTICE the FIFO asks us to send to a
 target that is not the reserved channel itself:
@@ -17,12 +16,14 @@ target that is not the reserved channel itself:
 A hit drops the line. There is no override verb on purpose: an override is
 the thing that gets used at 3am on the one line that should not have gone.
 Paraphrase gets through — no word-level filter stops it. That half stays in
-CLAUDE.md.
+the session's standing orders (its CLAUDE.md).
 
-The three bot instances (Azzurra, Libera, IRCnet) are separate processes, and
-the worst leak is exactly the cross-network one, so the state is on disk:
-`bot.reserved` lists the channels (tracked), and the instance that sits in one
-appends what it hears to a shared store the others read on every check.
+The bot instances (one per network) are separate processes, and the worst
+leak is exactly the cross-network one, so the state is on disk: `bot.reserved`
+lists the channels, and the instance that sits in one appends what it hears to
+a shared store the others read on every check. `bot.reserved` is per
+deployment and untracked (a reserved channel's name is itself reserved);
+`bot.reserved.example` shows the format.
 DMs to trust-listed nicks pass: "gliela si dice la' dov'e' nata o in query".
 """
 
@@ -115,8 +116,8 @@ class LeakGuard:
         self.reserved = load_reserved(self.reserved_file)
         self.mine = {c for h, c in self.reserved if h == self.host}
         names = sorted({c for _, c in self.reserved}, key=len, reverse=True)
-        # Word-bounded on both sides so `#it-opers` does not fire on
-        # `#it-operstuff`, and case-insensitive like IRC channel names.
+        # Word-bounded on both sides so `#secret` does not fire on
+        # `#secretstuff`, and case-insensitive like IRC channel names.
         self.name_re = re.compile(
             r"(?<![\w#&-])(" + "|".join(re.escape(n) for n in names) + r")(?![\w-])",
             re.IGNORECASE,

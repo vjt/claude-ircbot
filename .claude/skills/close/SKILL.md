@@ -6,6 +6,8 @@ user_invocable: true
 
 # /close — shut vjt-claude down cleanly
 
+`<repo>` below = the project root, i.e. this skill's base directory minus `/.claude/skills/<name>` (the session's working dir).
+
 Mirror of `/start`. Run this **before** `/exit` when you're going to relaunch Claude Code from this dir later. Graceful: morph and the crew see a clean leave message instead of a hard timeout.
 
 Skip this skill if you're leaving the session running — it's only needed when you're actually going to kill Claude Code.
@@ -14,7 +16,7 @@ Skip this skill if you're leaving the session running — it's only needed when 
 
 ### 1. Final activity-log flush
 
-- Read `/home/vjt/code/IRC/vjt-claude/memory/project_activity_log.md` (repo path — see CLAUDE.md Memory hygiene) and check today's heading.
+- Read `<repo>/memory/project_activity_log.md` (repo path — see CLAUDE.md Memory hygiene) and check today's heading.
 - **If meaningful events from this session aren't logged yet**, append them now under today's heading. Apply the same filter as during the session (decisions / ships / plans / surprises — not banter).
 - If today's heading is empty and nothing notable happened, that's fine — leave it as a placeholder. Don't invent content.
 
@@ -24,11 +26,11 @@ The QUIT message should nod at whatever the crew was just talking about. Mascett
 
 Procedure:
 
-1. Read the last ~30 lines of `/home/vjt/code/IRC/vjt-claude/bot.log` (`tail -n 30`). Extract the dominant topic/phrase from the most recent crew exchanges — what's on everyone's lips right this minute?
+1. Read the last ~30 lines of `<repo>/bot.log` (`tail -n 30`). Extract the dominant topic/phrase from the most recent crew exchanges — what's on everyone's lips right this minute?
 2. Craft a supercazzola QUIT message that fuses the topic with Mascetti-style verbal nonsense. Aim for: topic-nod + `come se fosse antani / tarapìa tapìoco / scappellamento / prematurata` construction + closing blasphemy if register allows.
 3. Fire it:
    ```bash
-   printf 'QUIT :<your supercazzola here>\n' > /home/vjt/code/IRC/vjt-claude/bot.send
+   printf 'QUIT :<your supercazzola here>\n' > <repo>/bot.send
    ```
 
 Examples of the shape (don't use these verbatim — regenerate from actual current chatter):

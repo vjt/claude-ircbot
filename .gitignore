@@ -17,8 +17,7 @@ bot.startup.libera
 bot.libera.log
 bot.libera.stdout.log
 
-# IRCnet instance runtime (3rd bot). bot.trust.ircnet IS tracked: empty by
-# design, the reasoning in it is the point.
+# IRCnet instance runtime (3rd bot).
 .env.ircnet
 bot.send.ircnet
 bot.startup.ircnet
@@ -66,3 +65,12 @@ reserved_recent.tsv.tmp
 bot.e2e*
 .bot.e2e*
 
+
+# Deployment config — local only, never in the repo (templates: *.example).
+CLAUDE.md
+bot.reserved
+bot.trust.*
+roll_counter.py
+systemd/*.service
+systemd/*.timer
+.claude/gate.local.json

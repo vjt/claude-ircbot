@@ -6,8 +6,8 @@ Minimal Python IRC bridge that lets a
 [Claude Code](https://www.anthropic.com/claude-code) session participate in
 an IRC channel as a real user.
 
-Built in an evening as a proof of concept, kept growing since. Origin story:
-[Claude walks into #it-opers](https://sindro.me/posts/2026-04-17-claude-walks-into-it-opers/).
+Built in an evening as a proof of concept, kept growing since. Origin story
+on [sindro.me](https://sindro.me/) (April 2026).
 
 The persistent Claude Code session that runs on top of this bot publishes
 its operating manual and memory architecture (how it survives compactions,
@@ -46,28 +46,63 @@ add one, irc-olm, and only where they are turned on). A handful of small sidecar
 ### Usage
 
 ```bash
-python3 -u bot.py
+IRC_HOST=irc.example.net IRC_NICK=mybot python3 -u bot.py
 ```
 
-Default config is inline at the top of `bot.py` — adjust `HOST`, `PORT`,
-`NICK` for your target network. Every default is also
-environment-overridable, which is what makes a second instance possible
-(see [Running two networks](#running-two-networks)):
+### Configuration
+
+Nothing about a deployment lives in the tracked code: the bot is configured
+by environment variables (in practice, `Environment=` lines in its systemd
+unit) plus a few local files next to `bot.py`, all of them gitignored. That
+is also what makes a second instance possible (see
+[Running two networks](#running-two-networks)).
+
+`IRC_HOST` and `IRC_NICK` have no default: without them the bot prints what
+is missing on stderr and exits. Everything else is optional. Relative file
+names below are next to `bot.py`.
 
 | Variable | Default | What it is |
 |---|---|---|
-| `IRC_HOST` / `IRC_PORT` | `irc.azzurra.chat` / `6697` | TLS endpoint |
-| `IRC_NICK` / `IRC_IDENT` / `IRC_REAL` | `vjt-claude` / `claude` / repo URL | registration |
+| `IRC_HOST` | **required** | TLS endpoint |
+| `IRC_NICK` | **required** | nick, also the NickServ / SASL account |
+| `IRC_PORT` | `6697` | TLS port |
+| `IRC_IDENT` / `IRC_REAL` | `claude` / repo URL | registration |
+| `IRC_BIND` | unset (kernel picks) | source address to connect from |
+| `IRC_SASL` | `0` | `1` = SASL PLAIN (nick + `NICKSERV_PASS`) before registration, for networks that cloak only once you are identified |
+| `IRC_TLS_VERIFY` | `1` | `0` skips certificate checks, for networks whose certs do not validate; never where a password crosses the link |
+| `BOT_IDLE` | unset (no idle ticks) | `#chan=MIN-MAX[,#chan=MIN-MAX…]`, seconds, see [Idle tick](#idle-tick) |
 | `BOT_LOG` | `bot.log` | raw traffic log, both directions |
 | `BOT_FIFO` | `bot.send` | command inbox |
 | `BOT_TRUST` | `bot.trust` | trust list (see below) |
 | `BOT_DM_ALLOW` | `bot.dmallow` | nicks outside the trust list whose private messages are shown, untrusted (see below) |
 | `BOT_ENV` | `.env` | NickServ password file |
 | `BOT_STARTUP` | `bot.startup` | post-auth command replay |
+| `BOT_RESERVED` | `bot.reserved` | reserved channels (see below), shared by all instances |
+| `BOT_RESERVED_STORE` | `reserved_recent.tsv` | recent lines of those channels, shared by all instances |
 | `BOT_E2E_KEY` | unset (E2E off) | Olm pickle key, see [encrypted queries](#end-to-end-encrypted-queries-optional) |
 | `BOT_E2E_NETWORK` | unset | network id the Olm state is bound to (required with the key) |
 | `BOT_E2E_PINS` | unset | the operator's pinned keys (required with the key) |
 | `BOT_E2E_STATE` | `~/.local/state/claude-ircbot/<network>.e2e.json` | Olm account and sessions, mode 600 |
+
+Less common knobs (DCC, the channel convergence interval, the auto-reply to
+strangers' private messages) are documented where `bot.py` defines them.
+
+The local files, all per deployment and gitignored:
+
+| File | What it holds | Template |
+|---|---|---|
+| `.env` | `NICKSERV_PASS=…` | — |
+| `bot.trust` | who may give the agent orders | [Trust model](#trust-model) |
+| `bot.dmallow` | who may DM the bot, untrusted | [Trust model](#trust-model) |
+| `bot.startup` | joins and invites replayed after auth | [below](#nickserv-auth--startup-replay) |
+| `bot.reserved` | channels whose words and name never leave them | `bot.reserved.example` |
+| `.claude/settings.local.json` | host-specific allow rules | [Permission gate](#permission-gate-claude-code-hook) |
+| `.claude/gate.local.json` | who the permission gate notifies | [Permission gate](#permission-gate-claude-code-hook) |
+
+`bot.reserved` lists `<irc host> <#channel>` per line. Every line the FIFO
+asks the bot to send elsewhere is dropped (`LEAK_BLOCKED`) when it names one
+of those channels or repeats six words in a row said there in the last 24
+hours. One file for all instances, so the guard holds across networks too.
 
 Timestamps in `bot.log` and on the event stream are `Europe/Rome` wall
 clock regardless of the host TZ.
@@ -110,7 +145,7 @@ with its own env, not a threading model inside the bot. Everything
 per-network is a file path, so the two instances share zero state:
 
 ```bash
-IRC_HOST=irc.libera.chat \
+IRC_HOST=irc.libera.chat IRC_NICK=mybot IRC_SASL=1 \
 BOT_LOG=bot.libera.log BOT_FIFO=bot.send.libera \
 BOT_TRUST=bot.trust.libera BOT_ENV=.env.libera \
 BOT_STARTUP=bot.startup.libera \
@@ -120,7 +155,8 @@ python3 -u bot.py
 The agent attaches one Monitor per instance (each has its own stdout
 stream) and picks the FIFO per message:
 `./bot.say -f bot.send.libera '#chan'`.
-`systemd/vjt-claude-libera-bot.service` is exactly this, as a unit.
+As a unit, that is one more copy of `systemd/claude-ircbot.service.example`
+with those lines uncommented (see [systemd](#systemd)).
 
 ### NickServ auth & startup replay
 
@@ -135,11 +171,9 @@ chanserv invites without baking them into `bot.py`:
 
 ```
 # bot.startup
-RAW PRIVMSG ChanServ :INVITE #it-opers
-JOIN #it-opers
-RAW PRIVMSG ChanServ :INVITE #sniffo
-JOIN #sniffo
-JOIN #olografix
+RAW PRIVMSG ChanServ :INVITE #private
+JOIN #private
+JOIN #mychannel
 ```
 
 Lines starting with `#` are comments; blank lines ignored.
@@ -149,7 +183,7 @@ Lines starting with `#` are comments; blank lines ignored.
 Trust is the combination of three checks, ALL required:
 
 1. **Nick listed** in `bot.trust` (one `<nick> <host_glob>` per line).
-2. **Host matches the glob** (`fnmatch`, e.g. `*.openssl.it`) — defends
+2. **Host matches the glob** (`fnmatch`, e.g. `*.example.org`) — defends
    against nick-only impersonation if services lapse.
 3. **Registered & identified to services** — confirmed via
    `RPL_WHOISREGNICK` (numeric `307`). A one-shot `WHOIS` fires on the
@@ -176,7 +210,7 @@ Example `bot.trust`:
 
 ```
 # <nick> <host_glob>
-vjt *.openssl.it
+alice *.example.org
 ```
 
 `bot.dmallow`, in the same `<nick> <host_glob>` format, lets a nick outside
@@ -206,12 +240,12 @@ previous pins if the new file does not parse.
 Setting it up, once per instance:
 
 1. A venv with irc-olm, since the system python stays dependency-free:
-   `python3 -m venv /opt/vjt-claude-e2e && /opt/vjt-claude-e2e/bin/pip install -r requirements-e2e.txt`,
+   `python3 -m venv /opt/claude-ircbot-e2e && /opt/claude-ircbot-e2e/bin/pip install -r requirements-e2e.txt`,
    and run `bot.py` with that interpreter.
 2. A key, outside the repo, made by the user the bot runs as: the bot refuses
    a key file group or others can read, so it must be that user's own. As
    that user, with the venv's python (the system one has no irc-olm):
-   `mkdir -p -m 700 ~/.config/vjt-claude && /opt/vjt-claude-e2e/bin/python -m irc_olm keygen ~/.config/vjt-claude/azzurra.key`.
+   `mkdir -p -m 700 ~/.config/claude-ircbot && /opt/claude-ircbot-e2e/bin/python -m irc_olm keygen ~/.config/claude-ircbot/mynet.key`.
    Made by root it would be root's, and the bot could not read it. It
    encrypts every secret in the state file; losing it means a new identity,
    and every peer has to paste the new key.
@@ -219,8 +253,8 @@ Setting it up, once per instance:
    exactly as its client shows it (cicchetto shows its own; 43 characters):
 
    ```
-   # /etc/vjt-claude/e2e.pins
-   vjt Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE
+   # /etc/claude-ircbot/e2e.pins
+   alice OxhEN9lGQvbtNQdXhdicNAiGPou7iOm8dUx38EbjByM
    ```
 
    **The bot only reads this file, and its Claude session must not be able to
@@ -364,9 +398,20 @@ hook denies.
 Why it exists: Claude Code's built-in permission prompt is *interactive*
 — a blocked tool call silently waits for a human at the terminal. When
 the agent lives on IRC and the human is elsewhere, that's a dead-lock.
-The hook short-circuits the prompt: it denies fast and writes a `NOTICE`
-to the configured nick (`vjt` by default) via the bot FIFO, so the
-blocked call surfaces on IRC.
+The hook short-circuits the prompt: it denies fast and messages the
+operator via the bot FIFO, so the blocked call surfaces on IRC.
+
+Who that is comes from `.claude/gate.local.json` (gitignored), re-read on
+every call so an edit takes effect in a running session:
+
+```json
+{"operator": "alice", "bot_nick": "mybot"}
+```
+
+`operator` is the nick told about every blocked call; `bot_nick` prefixes
+the reply the notice suggests (`mybot: allow …`). Without the file, or
+without `operator`, the hook still denies, it just tells nobody. Neither
+key changes what is allowed.
 
 The allow-rule grammar is a small superset of Claude Code's native
 syntax:
@@ -382,7 +427,7 @@ Tool(key:value)                 # generic key:value equality on tool_input
 ```
 
 The agent can ask a trusted IRC user for a new allow rule on the fly
-(`vjt-claude: allow <rule>`) and the hook setup writes it to
+(`<bot nick>: allow <rule>`) and the hook setup writes it to
 `settings.local.json` for the next attempt. That lives in the agent's
 system prompt + the bot, not in the hook itself — the hook is just the
 enforcement point.
@@ -396,8 +441,13 @@ a single `IDLE <chan>` event on stdout and disarms until the next human
 line.
 
 The agent treats `IDLE` as an opportunity, not an obligation — it can
-drop a context-aware one-liner or stay silent. Ranges are tuned per
-channel inside `bot.py` (`IDLE_RANGES`).
+drop a context-aware one-liner or stay silent. Channels and ranges come
+from `BOT_IDLE`, in seconds; a channel not listed never ticks, and without
+the variable nothing does:
+
+```bash
+BOT_IDLE='#mychannel=300-1200,#quiet=1800-5400'
+```
 
 ### KICK auto-rejoin
 
@@ -429,9 +479,23 @@ the bookkeeping.
   tool_result, so it never clears mid-tool-call. Also posts a short
   memory-scrub prompt after the clear so the agent trims its rolling
   activity log.
-- **`roll_counter.py`** — the open-set Italian blasphemy matcher and the
-  `::Roll` scorer. **Retired as a daemon**: kept because its matchers are
-  imported as a library, not because anything still runs it.
+
+`aup_watchdog.py` is configured by environment variables too. The defaults
+fit a session started in this checkout, in tmux window `ircbot`, talking
+through this checkout's `bot.send`, and send nothing to IRC:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `WATCHDOG_PROJECT_DIR` | `~/.claude/projects/<checkout path, every non-alphanumeric as ->` | where Claude Code keeps the session's transcripts |
+| `WATCHDOG_FIFO` | `bot.send` in the checkout | bot FIFO its IRC lines go to |
+| `WATCHDOG_WINDOW` | `ircbot` | tmux window of the agent's pane |
+| `WATCHDOG_PANE_CMD` / `WATCHDOG_PANE_INDEX` | `claude` / any | which pane of that window |
+| `WATCHDOG_ESCALATE_NICK` | unset (silent) | nick told when the pane stays unfindable for 5 min |
+| `WATCHDOG_ANNOUNCE_TO` | unset (silent) | channel or nick told about a forced (refusal / AUP) `/clear` |
+| `WATCHDOG_LABEL` | `watchdog` | prefix of its IRC lines |
+| `WATCHDOG_SCRUB_PROMPT` / `WATCHDOG_PRE_CLEAR_PROMPT` | `/resume` / built-in | what it types after and before a `/clear` |
+| `WATCHDOG_GRANT_AS` | unset | user owning the transcripts, when they are another user's |
+
 The game sidecars that used to live here — the meal poll, the hangman,
 the `!list` gag, the channel-stats summary, the nun hunt — have **moved
 out of this repo**. They were never about the bridge: they are games that
@@ -441,16 +505,24 @@ stays is the bridge and the sidecars that serve *this* session.
 
 ### systemd
 
-`systemd/` ships four user units — three bot instances
-(`vjt-claude-bot.service` for Azzurra, `vjt-claude-libera-bot.service` for
-Libera.Chat, `vjt-claude-ircnet-bot.service` for IRCnet) and the
-`aup-watchdog` sidecar. Drop (or symlink) the unit files into
-`~/.config/systemd/user/` and enable what you want. Encrypted queries are
-switched on per unit by a drop-in that holds the key and so never enters the
-repo: `systemd/e2e.conf.example` is the template.
+`systemd/` ships templates, not units: a deployment's units name its own
+paths, networks and nicks, so they stay out of the repo.
+
+- `claude-ircbot.service.example` — one bot instance. One copy per
+  network, each with its own `IRC_HOST` / `IRC_NICK` and, past the first,
+  its own `BOT_LOG` / `BOT_FIFO` / `BOT_TRUST` / `BOT_ENV` / `BOT_STARTUP`.
+- `aup-watchdog.service.example` — the watchdog sidecar, one per Claude
+  Code session.
+- `e2e.conf.example` — a drop-in that turns encrypted queries on for one bot
+  unit. It holds the key, so it never enters the repo either: it goes in
+  `~/.config/systemd/user/<unit>.service.d/e2e.conf`.
+
+Copy a template into `~/.config/systemd/user/` without the `.example`
+suffix, replace `/path/to/claude-ircbot` and the `<…>` placeholders, then:
 
 ```bash
-systemctl --user enable --now vjt-claude-bot.service
+systemctl --user daemon-reload
+systemctl --user enable --now claude-ircbot.service
 loginctl enable-linger "$USER"   # so it survives logout and starts at boot
 ```
 

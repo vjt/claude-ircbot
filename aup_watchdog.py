@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Watchdog / clear-sidecar for the long-lived Claude Code session that
-powers vjt-claude. Tails the active session JSONL under
-~/.claude/projects/-home-vjt-code-IRC-vjt-claude/ and injects `/clear`
-into the tmux pane running `claude` in window `ircbot` (resolved
-session-agnostic via `tmux list-panes -a`) on three independent triggers:
+powers the bot. Tails the active session JSONL under the session's
+~/.claude/projects/<dir>/ (by default the one Claude Code keeps for a
+session started in this repo) and injects `/clear` into the tmux pane
+running `claude` in window `ircbot` (resolved session-agnostic via
+`tmux list-panes -a`) on three independent triggers:
 
 1. AUP refusal — assistant message matches "Usage Policy" / "unable to
    respond" pattern → clear immediately.
@@ -12,14 +13,16 @@ session-agnostic via `tmux list-panes -a`) on three independent triggers:
    pending assistant tool_use awaiting a user tool_result → clear.
 3. Manual — SIGUSR1 forces a /clear + scrub on the next tick, bypassing
    debounce. For testing the scrub flow on demand:
-       systemctl --user kill -s SIGUSR1 vjt-claude-aup-watchdog.service
+       systemctl --user kill -s SIGUSR1 aup-watchdog.service
 
 All triggers share the same cooldown window, so back-to-back clears
 never stack. Nothing here runs claude itself — it only kicks the pane.
 
-One instance per session. The defaults are vjt-claude's; a second session
-(vjt-ds4, 2026-11-08) runs its own instance with the WATCHDOG_* environment
-variables below overriding where it reads, which pane it kicks and what it says.
+One instance per session. The defaults fit a session started in this repo
+talking through its bot.send; a second session (2026-11-08) runs its own
+instance with the WATCHDOG_* environment variables below overriding where it
+reads, which pane it kicks and what it says. Nothing goes to IRC unless
+WATCHDOG_ESCALATE_NICK / WATCHDOG_ANNOUNCE_TO name a target.
 
 (Original AUP-only script; extended 2026-04-19 with the idle trigger
 per vjt's request to also free KV on quiet periods.)
@@ -36,8 +39,14 @@ from pathlib import Path
 
 _env = os.environ.get
 
+REPO = Path(__file__).resolve().parent
+# Claude Code keeps a session's transcripts in ~/.claude/projects/<dir>, <dir>
+# being the absolute path the session was started in with every character that
+# is not a letter or a digit turned into "-" (so /srv/my.bot -> -srv-my-bot).
+# Default: a session started in this repo.
 PROJECT_DIR = Path(_env("WATCHDOG_PROJECT_DIR",
-                        str(Path.home() / ".claude/projects/-home-vjt-code-IRC-vjt-claude")))
+                        str(Path.home() / ".claude/projects"
+                            / re.sub(r"[^A-Za-z0-9]", "-", str(REPO)))))
 TMUX_WINDOW_NAME = _env("WATCHDOG_WINDOW", "ircbot")  # window name only — session-agnostic
 # The pane is the one in that window whose foreground command is PANE_CMD. A
 # session started through `sudo -u <user> -i` shows `sudo`, not `claude`, and
@@ -45,10 +54,11 @@ TMUX_WINDOW_NAME = _env("WATCHDOG_WINDOW", "ircbot")  # window name only — ses
 # WATCHDOG_PANE_INDEX pins which pane of the window it is.
 PANE_CMD = _env("WATCHDOG_PANE_CMD", "claude")
 PANE_INDEX = _env("WATCHDOG_PANE_INDEX")  # None = any pane of the window
-BOT_FIFO = Path(_env("WATCHDOG_FIFO", "/home/vjt/code/IRC/vjt-claude/bot.send"))
-ESCALATE_NICK = _env("WATCHDOG_ESCALATE_NICK", "vjt")  # SAY target when resolve stays broken
-# where a refusal/AUP clear is announced (vjt, 2026-10-29)
-FORCED_CLEAR_CHAN = _env("WATCHDOG_ANNOUNCE_TO", "#sbiffo")
+BOT_FIFO = Path(_env("WATCHDOG_FIFO", str(REPO / "bot.send")))
+# SAY target when resolve stays broken; empty = no escalation
+ESCALATE_NICK = _env("WATCHDOG_ESCALATE_NICK", "")
+# where a refusal/AUP clear is announced (vjt, 2026-10-29); empty = not announced
+FORCED_CLEAR_CHAN = _env("WATCHDOG_ANNOUNCE_TO", "")
 LABEL = _env("WATCHDOG_LABEL", "watchdog")  # prefix of every IRC line it sends
 # Set when the transcripts belong to another user, readable through a default
 # ACL on PROJECT_DIR: see grant_read().
@@ -136,7 +146,10 @@ def log(msg: str) -> None:
 
 
 def send_fifo_say(nick: str, msg: str) -> None:
-    """Fire a SAY to the IRC bridge FIFO — best effort, never raises."""
+    """Fire a SAY to the IRC bridge FIFO — best effort, never raises.
+    No target configured (empty `nick`) = nothing is sent."""
+    if not nick:
+        return
     try:
         with BOT_FIFO.open("w") as f:
             f.write(f"SAY {nick} {msg}\n")
@@ -369,7 +382,7 @@ _resolve_state: dict[str, float | bool] = {"fail_since": 0.0, "alerted": False}
 
 # Set by SIGUSR1 handler to force a /clear on the next main-loop tick.
 # Use case: manual test of the scrub flow without waiting for idle/turn-cap.
-#   systemctl --user kill -s SIGUSR1 vjt-claude-aup-watchdog.service
+#   systemctl --user kill -s SIGUSR1 aup-watchdog.service
 _manual_fire = False
 
 
@@ -395,7 +408,7 @@ def fire_clear(reason: str, warn: bool = True, announce: bool = False) -> bool:
                 f"(window={TMUX_WINDOW_NAME}, cmd={PANE_CMD}) for "
                 f"{int(now - fail_since)}s — /clear injection stalled ({reason})"
             )
-            log(f"ESCALATING to {ESCALATE_NICK}: {msg}")
+            log(f"ESCALATING to {ESCALATE_NICK or 'nobody (WATCHDOG_ESCALATE_NICK unset)'}: {msg}")
             send_fifo_say(ESCALATE_NICK, msg)
             _resolve_state["alerted"] = True
         log(f"{reason} but no claude pane found — skipping")

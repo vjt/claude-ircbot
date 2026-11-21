@@ -1,0 +1,10 @@
+# Reserved channels: what is said there never leaves, and the name itself is
+# never written anywhere else (leak_guard.py). Copy to `bot.reserved` (or point
+# BOT_RESERVED at it) and keep it out of the repo: the file names the channels
+# it protects.
+#
+# `<irc host> <#channel>`, one per line, the host exactly as the instance that
+# sits in the channel has it in IRC_HOST. Every instance reads the same file,
+# so a name listed here is blocked on all networks. Whole-line comments only:
+# a trailing `# ...` cannot be told apart from a channel name.
+irc.example.net #secret

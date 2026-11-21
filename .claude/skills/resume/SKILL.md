@@ -6,6 +6,8 @@ user_invocable: true
 
 # /resume — warm rehydrate after a /clear
 
+`<repo>` below = the project root, i.e. this skill's base directory minus `/.claude/skills/<name>` (the session's working dir).
+
 The watchdog fires this after every `/clear` — this is the **hot path**, run thousands of
 times, so it must stay lean. **This file is the canonical bringup protocol and is
 self-contained: never pull in `/start` to "understand" a step — doing so reloads the heavy
@@ -38,13 +40,13 @@ entirely). The `tail -F` pipelines survive `/clear`; the Monitor task registrati
 **Handle ALL THREE.** Libera and Telegram are the easy-to-forget ones — their processes often
 do NOT survive, so you usually attach them fresh even when Azzurra's got adopted.
 **+ IRCnet** (3° bot, rientrato 2026-11-21, solo #disagio; contano solo `ENCRYPTED=1`/`CONFIRMED=1`,
-il resto è UNTRUSTED): pgrep `tail -F.*vjt-claude/bot.ircnet.stdout.log`; nessun hit → Monitor
-`bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor-ircnet.sh`
+il resto è UNTRUSTED): pgrep `tail -F.*/bot.ircnet.stdout.log`; nessun hit → Monitor
+`bash <repo>/.claude/skills/start/start-monitor-ircnet.sh`
 (persistent, 3600000, "IRCnet bot events (#disagio, E2E orders only)"); svc `vjt-claude-ircnet-bot.service`.
 
 ```bash
-pgrep -af "tail -F.*vjt-claude/bot.stdout.log"          # Azzurra
-pgrep -af "tail -F.*vjt-claude/bot.libera.stdout.log"   # Libera
+pgrep -af "tail -F.*/bot.stdout.log"          # Azzurra
+pgrep -af "tail -F.*/bot.libera.stdout.log"   # Libera
 pgrep -af "[t]g_poll.sh"                                # Telegram
 systemctl --user is-active vjt-claude-bot.service vjt-claude-libera-bot.service \
   vjt-claude-ircnet-bot.service vjt-claude-aup-watchdog.service
@@ -56,13 +58,13 @@ For EACH stream independently:
 - No hit → attach one fresh Monitor:
   - **Azzurra:**
     ```
-    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor.sh
+    Monitor: command: bash <repo>/.claude/skills/start/start-monitor.sh
              persistent: true, timeout_ms: 3600000
              description: "IRC bot events (msgs+trust, invites, errors)"
     ```
   - **Libera:**
     ```
-    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/.claude/skills/start/start-monitor-libera.sh
+    Monitor: command: bash <repo>/.claude/skills/start/start-monitor-libera.sh
              persistent: true, timeout_ms: 3600000
              description: "Libera IRC bot events (#grappa)"
     ```
@@ -70,7 +72,7 @@ For EACH stream independently:
     which chat is which lives in `[[project_melablu_support]]` / `[[reference_telegram_bridge_handles]]`,
     not in this repo):
     ```
-    Monitor: command: bash /home/vjt/code/IRC/vjt-claude/var/tg_poll.sh
+    Monitor: command: bash <repo>/var/tg_poll.sh
              persistent: true, timeout_ms: 3600000
              description: "Telegram @gazzurbo_bot messages (Melablu support + shared group)"
     ```
@@ -82,7 +84,7 @@ For EACH stream independently:
   eventi così puoi reagire»). The `siem-*` systemd user timers (`/srv/siem/systemd/`, scripts in `/srv/siem/alarms/`) DM vjt and append each alert to
   `~/.local/state/m42-alarms.log`; this lets me see them too and act (investigate on m42, tell vjt):
   ```
-  Monitor: command: tail -n0 -F /home/vjt/.local/state/m42-alarms.log /home/vjt/.local/state/pf-alarm.err /home/vjt/.local/state/mail-auth-alarm.err 2>/dev/null | /usr/bin/grep --line-buffered -v -e '^==> ' -e '^$'
+  Monitor: command: tail -n0 -F ~/.local/state/m42-alarms.log ~/.local/state/pf-alarm.err ~/.local/state/mail-auth-alarm.err 2>/dev/null | /usr/bin/grep --line-buffered -v -e '^==> ' -e '^$'
            persistent: true, timeout_ms: 3600000
            description: "m42 security alarms (pf + mail auth) and alarm script errors"
   ```
@@ -96,7 +98,7 @@ For EACH stream independently:
 
 ```bash
 git status --short
-/home/vjt/code/IRC/vjt-claude/tools/sweep-bot-log.sh 50
+<repo>/tools/sweep-bot-log.sh 50
 ```
 
 - Untracked/modified files = unfinished edits → read, finish (unless next step is destructive).

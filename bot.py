@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Minimal IRC bot bridging a claude-code conversation <-> Azzurra IRC.
+Minimal IRC bot bridging a claude-code conversation <-> an IRC network.
 
-- TLS connect to irc.azzurra.chat:6697 as vjt-claude.
+- TLS connect to $IRC_HOST:$IRC_PORT (6697 by default) as $IRC_NICK.
 - Every line logged to ./bot.log (next to this script).
 - Selected events emitted to stdout (one line each) so a Monitor sees them.
 - Reads commands from FIFO ./bot.send:
@@ -48,10 +48,11 @@ from zoneinfo import ZoneInfo
 
 from leak_guard import LeakGuard
 
-# Network + file paths are env-overridable so a SECOND instance (e.g. Libera.
-# Chat) runs the SAME code with its own nick / FIFO / logs / trust / startup.
-# Every default reproduces the original Azzurra single-instance behaviour, so
-# the Azzurra unit (which sets none of these vars) is unchanged.
+# All configuration comes from the environment, so one checkout runs any number
+# of instances (one process per network), each with its own nick / FIFO / logs
+# / trust / startup. IRC_HOST and IRC_NICK have no default: they are required,
+# and checked in check_config() at startup rather than here, because the tests
+# import this module. The file paths default to files next to this script.
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -59,9 +60,9 @@ def _cfg(key, default):
     return os.environ.get(key, default)
 
 
-HOST = _cfg("IRC_HOST", "irc.azzurra.chat")
+HOST = _cfg("IRC_HOST", "")
 PORT = int(_cfg("IRC_PORT", "6697"))
-NICK = _cfg("IRC_NICK", "vjt-claude")
+NICK = _cfg("IRC_NICK", "")
 IDENT = _cfg("IRC_IDENT", "claude")
 REAL = _cfg("IRC_REAL", "github.com/vjt/claude-ircbot")
 
@@ -190,14 +191,34 @@ leak_guard = LeakGuard(HOST, RESERVED_FILE, RESERVED_STORE)
 # HUMAN PRIVMSG. When elapsed, bot emits `IDLE <chan>` exactly once, then
 # disarms. Next human PRIVMSG re-arms with a fresh random cooldown.
 # Our own outgoing messages do NOT reset the timer.
-IDLE_RANGES = {
-    "#sniffo": (5 * 60, 20 * 60),
-    "#olografix": (10 * 60, 40 * 60),
-    "#it-opers": (30 * 60, 90 * 60),
-}
+# The channels and their ranges come from BOT_IDLE, as
+# `#chan=MIN-MAX[,#chan=MIN-MAX...]` in seconds; unset = no idle ticks at all.
+# Parsed by check_config() at startup, which fills the two dicts below.
+IDLE_SPEC = _cfg("BOT_IDLE", "")
+IDLE_RANGES: dict[str, tuple[int, int]] = {}
 # state[chan_lower] = fire_at (monotonic) or None if disarmed
-idle_state: dict[str, float | None] = {c.lower(): None for c in IDLE_RANGES}
+idle_state: dict[str, float | None] = {}
 idle_lock = threading.Lock()
+
+
+def parse_idle(spec):
+    """BOT_IDLE -> {chan_lower: (min_sec, max_sec)}. ValueError on a bad entry."""
+    out = {}
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        chan, _, rng = item.rpartition("=")
+        chan = chan.strip()
+        lo, _, hi = rng.partition("-")
+        try:
+            lo, hi = int(lo), int(hi)
+        except ValueError:
+            lo = hi = -1
+        if not chan.startswith(("#", "&")) or not 0 <= lo <= hi:
+            raise ValueError(f"BOT_IDLE: bad entry {item!r}, want #chan=MIN-MAX in seconds")
+        out[chan.lower()] = (lo, hi)
+    return out
 
 # Rolling kick history per channel (monotonic timestamps). If > KICK_MAX in KICK_WINDOW, give up rejoin.
 kick_history: dict[str, list[float]] = {}
@@ -1335,7 +1356,8 @@ def outbound_ok(verb, rest, origin):
     else:
         return True
     # Services commands name the reserved channel by design (bot.startup's
-    # `ChanServ :INVITE #it-opers` got eaten on the first restart, 2026-09-24).
+    # ChanServ INVITE for a reserved channel got eaten on the first restart,
+    # 2026-09-24).
     if target.lower() in ("chanserv", "nickserv"):
         return True
     reason = leak_guard.check(target, text, dm_ok=is_trust_listed(target))
@@ -1474,8 +1496,25 @@ def e2e_ticker_loop():
             emit("ERROR", "e2e-tick", repr(e))
 
 
+def check_config():
+    """Fail fast, with a plain message on stderr, on configuration that has no
+    default or does not parse. Called by main(), never at import."""
+    missing = [k for k, v in (("IRC_HOST", HOST), ("IRC_NICK", NICK)) if not v]
+    if missing:
+        sys.exit(f"bot.py: {' and '.join(missing)} must be set in the environment "
+                 "(see README, Configuration)")
+    try:
+        ranges = parse_idle(IDLE_SPEC)
+    except ValueError as e:
+        sys.exit(f"bot.py: {e}")
+    with idle_lock:
+        IDLE_RANGES.update(ranges)
+        idle_state.update({c: None for c in ranges})
+
+
 def main():
     global sock
+    check_config()
     load_trust()
     load_dm_allow()
     _start_e2e()   # before connecting: the 005 that sizes E2E lines comes early

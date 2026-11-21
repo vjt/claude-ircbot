@@ -1,0 +1,48 @@
+# One bot instance (one IRC network) as a systemd user unit.
+#
+# Copy to ~/.config/systemd/user/<name>.service, one copy per network, replace
+# /path/to/claude-ircbot with the checkout and the <...> placeholders, then
+# `systemctl --user daemon-reload && systemctl --user enable --now <name>`.
+# A second network is a second copy with its own nick, FIFO, logs, trust and
+# startup files (README "Running two networks").
+#
+# Encrypted queries: add systemd/e2e.conf.example as a drop-in, never here.
+
+[Unit]
+Description=claude-ircbot IRC bridge (FIFO inbox + event stream)
+Documentation=https://github.com/vjt/claude-ircbot
+After=network-online.target default.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/claude-ircbot
+# Required: the bot refuses to start without these two.
+Environment=IRC_HOST=<irc.example.net>
+Environment=IRC_NICK=<nick>
+# Optional, defaults in README "Configuration".
+#Environment=IRC_PORT=6697
+#Environment=IRC_SASL=1
+#Environment=IRC_TLS_VERIFY=0
+#Environment=IRC_BIND=<source address>
+#Environment="BOT_IDLE=#chan=300-1200,#other=600-2400"
+# Per-instance files: the defaults (bot.log, bot.send, bot.trust, .env,
+# bot.startup next to bot.py) suit ONE instance; give every other its own.
+#Environment=BOT_LOG=/path/to/claude-ircbot/bot.<network>.log
+#Environment=BOT_FIFO=/path/to/claude-ircbot/bot.send.<network>
+#Environment=BOT_TRUST=/path/to/claude-ircbot/bot.trust.<network>
+#Environment=BOT_ENV=/path/to/claude-ircbot/.env.<network>
+#Environment=BOT_STARTUP=/path/to/claude-ircbot/bot.startup.<network>
+ExecStart=/usr/bin/python3 -u /path/to/claude-ircbot/bot.py
+# Growing backoff, so a netsplit or a services storm is not a reconnect flood.
+Restart=always
+RestartSec=30
+RestartSteps=5
+RestartMaxDelaySec=1800
+StartLimitBurst=0
+# The event stream the agent's Monitor tails.
+StandardOutput=append:/path/to/claude-ircbot/bot.stdout.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

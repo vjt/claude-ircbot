@@ -12,14 +12,23 @@ import unittest
 TMP = tempfile.mkdtemp()
 for var, name in (("BOT_LOG", "bot.log"), ("BOT_FIFO", "bot.send"), ("BOT_TRUST", "bot.trust"),
                   ("BOT_ENV", "missing.env"), ("BOT_STARTUP", "bot.startup"),
-                  ("BOT_RESERVED_STORE", "reserved.tsv")):
+                  ("BOT_RESERVED", "bot.reserved"), ("BOT_RESERVED_STORE", "reserved.tsv")):
     os.environ[var] = os.path.join(TMP, name)
+# No defaults for these in bot.py; the same values as tests/test_bot_ghost.py,
+# whichever of the two imports bot first.
+os.environ["IRC_HOST"] = "irc.example.net"
+os.environ["IRC_NICK"] = "claude-bot"
 os.environ.pop("BOT_E2E_KEY", None)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot  # noqa: E402
+from leak_guard import LeakGuard  # noqa: E402
 
 HOST = "vjt.openssl.it"
+# A reserved channel of ours, on the network the bot is on.
+RESERVED = os.path.join(TMP, "test.reserved")
+with open(RESERVED, "w") as f:
+    f.write("irc.example.net #secret\n")
 
 
 class FakeBridge:
@@ -55,8 +64,9 @@ class BotE2ETest(unittest.TestCase):
         self.sent = []
         self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified),
                        dict(bot.dm_held), set(bot.whois_pending), bot.dm_allow_rules,
-                       bot.usage_reply, bot.me, set(bot.joined))
+                       bot.usage_reply, bot.me, set(bot.joined), bot.leak_guard)
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
+        bot.leak_guard = LeakGuard("irc.example.net", RESERVED, os.path.join(TMP, "reserved.tsv"))
         bot.me = bot.NICK                           # a test may rename us
         bot.trust_rules = [("vjt", "*.openssl.it")]
         bot.verified.clear()
@@ -73,7 +83,7 @@ class BotE2ETest(unittest.TestCase):
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
         (bot.send_raw, bot.bridge, bot.trust_rules, verified, held, pending, bot.dm_allow_rules,
-         bot.usage_reply, bot.me, joined) = self._saved
+         bot.usage_reply, bot.me, joined, bot.leak_guard) = self._saved
         bot.joined.clear()
         bot.joined.update(joined)
         bot.verified.clear()
@@ -166,7 +176,7 @@ class BotE2ETest(unittest.TestCase):
 
     def test_esay_goes_through_the_leak_guard(self):
         bot.bridge = FakeBridge()
-        bot.run_cmd("ESAY stranger vedi #it-opers")
+        bot.run_cmd("ESAY stranger vedi #secret")
         self.assertEqual(bot.bridge.calls, [])
         self.assertTrue(any(e.split()[1:3] == ["LEAK_BLOCKED", "ESAY"] for e in self.events()))
 
@@ -193,35 +203,35 @@ class BotE2ETest(unittest.TestCase):
         # The reason names the kind of match only: the words matched, or the
         # channel named, are the text that was meant to go encrypted.
         bot.bridge = FakeBridge(encrypt_to={"zed"})
-        bot.leak_guard.record("#it-opers", "ci vediamo a roma in via tal dei mille alle nove")
+        bot.leak_guard.record("#secret", "ci vediamo a roma in via tal dei mille alle nove")
         bot.run_cmd("ESAY stranger ci vediamo a roma in via tal dei mille")
         bot.run_cmd("SAY zed ci vediamo a roma in via tal dei mille")      # an encrypted reply
-        bot.run_cmd("EACT stranger guarda #it-opers")
+        bot.run_cmd("EACT stranger guarda #secret")
         blocked = [e for e in self.events() if " LEAK_BLOCKED " in e]
         self.assertEqual([e.split()[2:5] for e in blocked], [
             ["ESAY", "TO=stranger", "words"], ["SAY", "TO=zed", "words"],
             ["EACT", "TO=stranger", "name"]])
         with open(bot.LOG) as f:
             logged = [line for line in f if "LEAK_BLOCKED" in line]
-        for text in ("roma", "#it-opers"):
+        for text in ("roma", "#secret"):
             self.assertFalse(any(text in line for line in blocked + logged), (text, logged))
         self.assertEqual(bot.bridge.calls, [])
         # in plain text the reason stays whole, as before
-        bot.run_cmd("SAY #sbiffo guarda #it-opers")
-        self.assertIn("name:#it-opers", self.events()[-1])
+        bot.run_cmd("SAY #sbiffo guarda #secret")
+        self.assertIn("name:#secret", self.events()[-1])
 
     # --- inbound routing ---------------------------------------------------------------
 
     def test_e2e_lines_go_to_the_bridge_and_never_become_ctcp(self):
         bot.bridge = FakeBridge()
         line = "\x01E2E MSG AAAAAAAAAAA 1/1 eyJ2IjoxfQ==\x01"
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG vjt-claude :{line}")
-        self.assertEqual(bot.bridge.calls, [("on_e2e_line", ("vjt", HOST, "vjt-claude", line), {})])
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :{line}")
+        self.assertEqual(bot.bridge.calls, [("on_e2e_line", ("vjt", HOST, bot.NICK, line), {})])
         self.assertFalse(any(" CTCP " in e for e in self.events()))
 
     def test_server_facts_reach_the_bridge(self):
         bot.bridge = FakeBridge()
-        bot.handle_server_line(":srv 005 vjt-claude NETWORK=Azzurra CASEMAPPING=ascii :are supported")
+        bot.handle_server_line(f":srv 005 {bot.NICK} NETWORK=Azzurra CASEMAPPING=ascii :are supported")
         bot.handle_server_line(f":{bot.NICK}!claude@host.example JOIN :#sbiffo")
         bot.handle_server_line(f":{bot.NICK}!claude@host.example NICK :{bot.NICK}_")
         self.assertEqual([c[:2] for c in bot.bridge.calls], [
@@ -236,7 +246,7 @@ class BotE2ETest(unittest.TestCase):
 
     def test_a_held_order_emits_nothing_yet(self):
         bot.bridge = FakeBridge(verdict="held")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :vjt-claude: riavvia")
+        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.NICK}: riavvia")
         self.assertFalse(any(" MSG " in e for e in self.events()))
 
     def test_an_unchallenged_line_from_a_pinned_user_is_untrusted(self):

@@ -6,9 +6,9 @@ the hops come from the kernel error queue instead: one echo per TTL, the
 offending router falls out of SO_EE_OFFENDER. Needs no privileges as long as
 `net.ipv4.ping_group_range` covers our gid — it does on this Pi.
 
-    ./traceroute.py 192.0.2.1 example.org
+    ./traceroute.py 192.0.2.16 example.org
     HOPS=30 QUERIES=3 ./traceroute.py 8.8.8.8
-    MODE=udp ./traceroute.py 192.0.2.1   # for hosts that drop ICMP echo
+    MODE=udp ./traceroute.py 192.0.2.34   # for hosts that drop ICMP echo
     MODE=tcp PORT=443 ./traceroute.py 1.1.1.1
 
 IPv4 only: the ping socket, the TTL sockopt and the offender parsing are all
@@ -60,9 +60,9 @@ def probe(dest, ttl, timeout=1.0, seq=0, mode="icmp"):
         # yields all-stars.
         s.connect((dest, port))
         pkt = (
-            b"vjt-claude"
+            b"claude-ircbot"
             if mode == "udp"
-            else struct.pack("!BBHHH", 8, 0, 0, 0, seq) + b"vjt-claude"
+            else struct.pack("!BBHHH", 8, 0, 0, 0, seq) + b"claude-ircbot"
         )
         s.send(pkt)
     deadline = t0 + timeout
