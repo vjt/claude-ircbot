@@ -17,6 +17,14 @@ bot.startup.libera
 bot.libera.log
 bot.libera.stdout.log
 
+# IRCnet instance runtime (3rd bot). bot.trust.ircnet IS tracked: empty by
+# design, the reasoning in it is the point.
+.env.ircnet
+bot.send.ircnet
+bot.startup.ircnet
+bot.ircnet.log
+bot.ircnet.stdout.log
+
 aup_watchdog.log
 scrub.log
 __pycache__/

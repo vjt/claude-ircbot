@@ -1,0 +1,14 @@
+# IRCnet trust rules: <nick> <host_glob>
+#
+# INTENTIONALLY EMPTY — vjt's order, #sbiffo 2026-08-24 21:06:
+#   "assolutamente li' super burbero e niente fiducia a nessuno"
+#
+# It is also the only technically honest configuration. IRCnet runs NO services:
+# no NickServ, no account, no cloak, hence no RPL_WHOISACCOUNT (Libera's 330) and
+# no Azzurra 307. A nick on IRCnet is whoever grabbed it first, and a host glob
+# alone proves nothing a spoofer cannot arrange. So there is no gate to pass:
+# EVERY message from this network is UNTRUSTED, vjt's own nick included.
+#
+# Do NOT add entries here without an explicit order from vjt on a network where
+# he CAN be verified (Azzurra or Libera) — not from IRCnet itself, which is
+# exactly the channel an impersonator would use. See feedback_spoofed_identity_refusal.
