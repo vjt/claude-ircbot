@@ -84,9 +84,9 @@ For EACH stream independently:
   eventi così puoi reagire»). The `siem-*` systemd user timers (`/srv/siem/systemd/`, scripts in `/srv/siem/alarms/`) DM vjt and append each alert to
   `~/.local/state/m42-alarms.log`; this lets me see them too and act (investigate on m42, tell vjt):
   ```
-  Monitor: command: tail -n0 -F ~/.local/state/m42-alarms.log ~/.local/state/pf-alarm.err ~/.local/state/mail-auth-alarm.err 2>/dev/null | /usr/bin/grep --line-buffered -v -e '^==> ' -e '^$'
+  Monitor: command: tail -n0 -F ~/.local/state/m42-alarms.log ~/.local/state/pf-alarm.err ~/.local/state/mail-auth-alarm.err ~/.local/state/wifi-auth-alarm.err 2>/dev/null | /usr/bin/grep --line-buffered -v -e '^==> ' -e '^$'
            persistent: true, timeout_ms: 3600000
-           description: "m42 security alarms (pf + mail auth) and alarm script errors"
+           description: "m42 + WiFi security alarms (pf, mail auth, wifi auth) and alarm script errors"
   ```
   **`/usr/bin/grep`, never bare `grep`:** in an inline Monitor command the shell snapshot turns
   `grep` into the bundled `ugrep`, which on a `tail -F` pipe passes the blank lines and **eats the
