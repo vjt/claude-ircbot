@@ -5,13 +5,15 @@ powers the bot. Tails the active session JSONL under the session's
 ~/.claude/projects/<dir>/ (by default the one Claude Code keeps for a
 session started in this repo) and injects `/clear` into the tmux pane
 running `claude` in window `ircbot` (resolved session-agnostic via
-`tmux list-panes -a`) on three independent triggers:
+`tmux list-panes -a`) on four independent triggers:
 
 1. AUP refusal — assistant message matches "Usage Policy" / "unable to
    respond" pattern → clear immediately.
-2. Idle — jsonl mtime hasn't advanced for IDLE_SEC AND there is no
+2. Context — the last assistant reply saw MAX_CTX_TOKENS or more of
+   context, with no tool_use pending → clear.
+3. Idle — jsonl mtime hasn't advanced for IDLE_SEC AND there is no
    pending assistant tool_use awaiting a user tool_result → clear.
-3. Manual — SIGUSR1 forces a /clear + scrub on the next tick, bypassing
+4. Manual — SIGUSR1 forces a /clear + scrub on the next tick, bypassing
    debounce. For testing the scrub flow on demand:
        systemctl --user kill -s SIGUSR1 aup-watchdog.service
 
@@ -65,17 +67,20 @@ LABEL = _env("WATCHDOG_LABEL", "watchdog")  # prefix of every IRC line it sends
 GRANT_AS = _env("WATCHDOG_GRANT_AS")
 
 POLL_SEC = 2
-DEBOUNCE_SEC = 60           # any clear — AUP / idle / turns — holds this window
+DEBOUNCE_SEC = 60           # any clear — AUP / idle / context — holds this window
                             # (must be ≥ PRE_CLEAR_WARN_SEC + POST_CLEAR_WAIT + buffer)
 IDLE_ENABLED = True         # idle trigger re-enabled 2026-06-28 per vjt (was disabled
                             # 2026-06-05). History of the disable rationale below:
                             # idle trigger disabled 2026-06-05: clearing on quiet
                             # pays a full /start cycle (re-read CLAUDE.md/MEMORY/
                             # activity-log + scrub + sweep) to drop context that,
-                            # while idle, costs zero tokens. Turns guards real
-                            # bloat; AUP + SIGUSR1 cover recovery.
+                            # while idle, costs zero tokens. The context trigger
+                            # guards real bloat; AUP + SIGUSR1 cover recovery.
 IDLE_SEC = 3600             # 1 h = prompt-cache TTL: past it the context is cold anyway (2026-11-13)
-MAX_TURNS = 150             # assistant turns since last clear → eager clear (1.5x, 2026-06-28)
+# Context, in tokens, at which a /clear pays for itself. It replaces a count of
+# 150 transcript lines, which cleared at 117k of a 1M window when /resume alone
+# brings the session back to ~100k (vjt 2026-11-23: «poteva aspettare»).
+MAX_CTX_TOKENS = int(_env("WATCHDOG_MAX_CTX", "300000"))
 TAIL_SCAN = 200             # lines from end to check for pending tool_use
 PRE_CLEAR_WARN_SEC = 15     # grace window between warning prompt and /clear
                             # so Claude can persist in-flight state to disk
@@ -157,13 +162,8 @@ def send_fifo_say(nick: str, msg: str) -> None:
         _emit(f"FIFO write failed: {e!r}")
 
 
-def latest_jsonl() -> Path | None:
-    candidates = sorted(
-        PROJECT_DIR.glob("*.jsonl"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
+def newest(paths) -> Path | None:
+    return max(paths, key=lambda p: p.stat().st_mtime, default=None)
 
 
 def grant_read(path: Path) -> None:
@@ -293,6 +293,19 @@ def line_is_assistant_turn(line: str) -> bool:
     except json.JSONDecodeError:
         return False
     return rec.get("type") == "assistant"
+
+
+def line_ctx_tokens(line: str) -> int:
+    """Tokens of context the model read for this assistant reply (0 if none)."""
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        return 0
+    if rec.get("type") != "assistant" or rec.get("isSidechain"):
+        return 0
+    usage = (rec.get("message") or {}).get("usage") or {}
+    return sum(usage.get(k) or 0 for k in (
+        "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
 
 
 def line_matches_refusal(line: str) -> str | None:
@@ -430,7 +443,7 @@ def fire_clear(reason: str, warn: bool = True, announce: bool = False) -> bool:
         return False
     # A latched session drops its thread mid-conversation; say so in channel,
     # or people see the bot lose the plot with no explanation (vjt, #sbiffo
-    # 2026-10-29 21:08). Idle/turns clears are routine and stay silent.
+    # 2026-10-29 21:08). Idle/context clears are routine and stay silent.
     if announce:
         send_fifo_say(
             FORCED_CLEAR_CHAN,
@@ -450,32 +463,37 @@ def main() -> int:
         return 1
 
     log(f"watchdog starting — watching {PROJECT_DIR} "
-        f"(IDLE_SEC={IDLE_SEC}, DEBOUNCE_SEC={DEBOUNCE_SEC}, MAX_TURNS={MAX_TURNS})")
+        f"(IDLE_SEC={IDLE_SEC}, DEBOUNCE_SEC={DEBOUNCE_SEC}, MAX_CTX_TOKENS={MAX_CTX_TOKENS})")
     boot_ts = time.time()
-    current_file: Path | None = None
-    current_pos = 0
+    # Only a transcript that did not exist before is a new session. Claude Code
+    # writes to a finished one again hours later (12:04 and 14:04 UTC on
+    # 2026-11-23: a session that had continued in another got 3 lines), and
+    # following the newest mtime switched to it and replayed its 180 assistant
+    # lines into the count, which cleared this session at 12% of its context.
+    seen = set(PROJECT_DIR.glob("*.jsonl"))
+    current_file = newest(seen)
+    current_pos = current_file.stat().st_size if current_file else 0
+    if current_file:
+        grant_read(current_file)
+        log(f"tailing {current_file.name} from offset {current_pos} (skipping history)")
     last_fire = 0.0
-    first_attach = True
     turns_since_clear = 0
+    ctx_tokens = 0
 
     while True:
         try:
-            latest = latest_jsonl()
-            if latest is None:
+            fresh = set(PROJECT_DIR.glob("*.jsonl")) - seen
+            if fresh:
+                seen |= fresh
+                current_file = newest(fresh)
+                grant_read(current_file)
+                current_pos = 0
+                log(f"tailing {current_file.name} (new session)")
+                turns_since_clear = 0
+                ctx_tokens = 0
+            if current_file is None:
                 time.sleep(POLL_SEC)
                 continue
-
-            if latest != current_file:
-                grant_read(latest)
-                if first_attach:
-                    current_pos = latest.stat().st_size
-                    log(f"tailing {latest.name} from offset {current_pos} (skipping history)")
-                    first_attach = False
-                else:
-                    current_pos = 0
-                    log(f"tailing {latest.name} (new session)")
-                current_file = latest
-                turns_since_clear = 0
 
             # --- AUP trigger: tail new lines and pattern-match ---
             with current_file.open("r", encoding="utf-8", errors="replace") as f:
@@ -487,7 +505,7 @@ def main() -> int:
             fired_this_tick = False
 
             # --- Manual trigger: SIGUSR1 forces a /clear + scrub now ---
-            # Bypasses debounce and AUP/turns/idle logic — for testing the
+            # Bypasses debounce and AUP/context/idle logic — for testing the
             # scrub flow on demand. `systemctl --user kill -s SIGUSR1 …`.
             global _manual_fire
             if _manual_fire:
@@ -503,6 +521,7 @@ def main() -> int:
                         continue
                     if line_is_assistant_turn(line):
                         turns_since_clear += 1
+                        ctx_tokens = line_ctx_tokens(line) or ctx_tokens
                     refusal = line_matches_refusal(line)
                     if refusal:
                         if now - last_fire < DEBOUNCE_SEC:
@@ -523,15 +542,16 @@ def main() -> int:
                             fired_this_tick = True
                         break
 
-            # --- Turns trigger: MAX_TURNS assistant turns since last clear ---
-            if not fired_this_tick and turns_since_clear >= MAX_TURNS:
+            # --- Context trigger: the last reply saw MAX_CTX_TOKENS or more ---
+            if not fired_this_tick and ctx_tokens >= MAX_CTX_TOKENS:
                 if now - last_fire < DEBOUNCE_SEC:
                     pass  # wait out debounce, fire next tick
                 elif has_pending_tool_use(tail_lines(current_file)):
-                    log(f"turns {turns_since_clear} but pending tool_use — skipping")
-                elif fire_clear(f"TURNS {turns_since_clear}"):
+                    log(f"context {ctx_tokens} but pending tool_use — skipping")
+                elif fire_clear(f"CTX {ctx_tokens}"):
                     last_fire = now
                     turns_since_clear = 0
+                    ctx_tokens = 0
                     fired_this_tick = True
 
             # --- Idle trigger: jsonl quiet + no pending tool_use ---
