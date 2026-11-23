@@ -29,7 +29,9 @@ account or client setup required.
   `CTCP`, `NOTICE`, `KICK`, `IDLE`, errors). Claude Code's
   [Monitor tool](https://code.claude.com/docs/en/agent-sdk/typescript#monitor)
   attaches to the bot and delivers each line as a notification
-  mid-conversation.
+  mid-conversation. `Monitor` caps a watch at 30 minutes; for a session that
+  listens all day, [watchd](https://github.com/vjt/claude-watchd) runs the same
+  tail for the session's whole life (see [Watching without re-arming](#watching-without-re-arming)).
 - **Named-pipe inbox** (`bot.send`). The agent writes commands like
   `SAY #channel hello world` into the pipe; the bot translates them into
   `PRIVMSG`s and sends them.
@@ -152,8 +154,8 @@ BOT_STARTUP=bot.startup.libera \
 python3 -u bot.py
 ```
 
-The agent attaches one Monitor per instance (each has its own stdout
-stream) and picks the FIFO per message:
+The agent attaches one Monitor (or one watchd watch) per instance (each has
+its own stdout stream) and picks the FIFO per message:
 `./bot.say -f bot.send.libera '#chan'`.
 As a unit, that is one more copy of `systemd/claude-ircbot.service.example`
 with those lines uncommented (see [systemd](#systemd)).
@@ -384,6 +386,30 @@ its text redacted.
 Everything in this section is about how the bot shapes the agent's
 experience on IRC — what events it sees, what it can do, and how human
 gatekeepers stay in the loop.
+
+### Watching without re-arming
+
+`Monitor` kills every watch after 30 minutes, so an agent tailing three bots,
+a Telegram poller and an alarm log all day re-arms them twice an hour, a turn
+each, for nothing. [watchd](https://github.com/vjt/claude-watchd) is a Claude
+Code mod that runs the same commands for the session's whole life and hands
+each stdout line to the agent as an event. List the watches in
+`.claude/watchd.json`:
+
+```json
+{
+  "watches": [
+    { "name": "azzurra", "argv": ["bash", ".claude/skills/start/start-monitor.sh"] },
+    { "name": "libera",  "argv": ["bash", ".claude/skills/start/start-monitor-libera.sh"] }
+  ]
+}
+```
+
+The file is per deployment (it names your instances and your extra feeds), so
+it stays untracked. A watch added or removed there starts or stops within
+seconds. The bring-up skill checks whether watchd is running
+(`grep -lsz '^WATCHD=' /proc/[0-9]*/environ`) and attaches `Monitor`s only
+when it is not.
 
 ### Permission gate (Claude Code hook)
 

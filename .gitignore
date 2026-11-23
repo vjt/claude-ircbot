@@ -74,3 +74,6 @@ roll_counter.py
 systemd/*.service
 systemd/*.timer
 .claude/gate.local.json
+
+# watchd watches are per deployment (instances, extra feeds): untracked.
+.claude/watchd.json
