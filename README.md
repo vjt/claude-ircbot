@@ -408,7 +408,7 @@ each stdout line to the agent as an event. List the watches in
 The file is per deployment (it names your instances and your extra feeds), so
 it stays untracked. A watch added or removed there starts or stops within
 seconds. The bring-up skill checks whether watchd is running
-(`grep -lsz '^WATCHD=' /proc/[0-9]*/environ`) and attaches `Monitor`s only
+(`grep -lsxzF "WATCHD_DIR=$PWD" /proc/[0-9]*/environ`) and attaches `Monitor`s only
 when it is not.
 
 ### Permission gate (Claude Code hook)

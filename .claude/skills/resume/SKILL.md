@@ -34,8 +34,9 @@ grep -nE '^### [0-9]{4}-[0-9]{2}-[0-9]{2}' memory/project_activity_log.md
 ## 2. Adopt the Monitors — THREE streams (don't duplicate)
 
 **watchd first.** The `watchd` mod runs every watch in `.claude/watchd.json` for the session's
-life, no 30' cap, each child marked `WATCHD=<name>` (vjt 2026-11-23). Check:
-`grep -lsz '^WATCHD=' /proc/[0-9]*/environ | wc -l` — hits → watchd owns the streams:
+life, no 30' cap, each child marked `WATCHD=<name>` + `WATCHD_DIR=<cwd>` (vjt 2026-11-23). Check
+(from the repo root, scoped to THIS project — noema/orch run watchd too):
+`grep -lsxzF "WATCHD_DIR=$PWD" /proc/[0-9]*/environ | wc -l` — hits → watchd owns the streams:
 **skip this whole section** (no Monitor, not even m42/cybernet/pane-watch), just
 `systemctl --user is-active` the services. Zero hits → watchd is not running: attach the
 Monitors below as before and tell vjt watchd is down.
