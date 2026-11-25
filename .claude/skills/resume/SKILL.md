@@ -37,7 +37,7 @@ grep -nE '^### [0-9]{4}-[0-9]{2}-[0-9]{2}' memory/project_activity_log.md
 life, no 30' cap, each child marked `WATCHD=<name>` + `WATCHD_DIR=<cwd>` (vjt 2026-11-23). Check
 (from the repo root, scoped to THIS project — noema/orch run watchd too):
 `grep -lsxzF "WATCHD_DIR=$PWD" /proc/[0-9]*/environ | wc -l` — hits → watchd owns the streams:
-**skip this whole section** (no Monitor, not even m42/cybernet/pane-watch), just
+**skip this whole section** (no Monitor, not even pane-watch), just
 `systemctl --user is-active` the services. Zero hits → watchd is not running: attach the
 Monitors below as before and tell vjt watchd is down.
 
@@ -88,18 +88,9 @@ For EACH stream independently:
     `getUpdates` offset in `var/tg_offset`, so a restart replays nothing. Reply with
     `var/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). **Only ONE poller may run** —
     a second `getUpdates` on the same token gets `409 Conflict` and both starve.
-- **m42 alarms** (4th Monitor, always attach fresh — vjt 2026-11-03: «metti dei monitor su questi
-  eventi così puoi reagire»). The `siem-*` systemd user timers (`/srv/siem/systemd/`, scripts in `/srv/siem/alarms/`) DM vjt and append each alert to
-  `~/.local/state/m42-alarms.log`; this lets me see them too and act (investigate on m42, tell vjt):
-  ```
-  Monitor: command: tail -n0 -F ~/.local/state/m42-alarms.log ~/.local/state/pf-alarm.err ~/.local/state/mail-auth-alarm.err ~/.local/state/wifi-auth-alarm.err 2>/dev/null | /usr/bin/grep --line-buffered -v -e '^==> ' -e '^$'
-           persistent: true, timeout_ms: 3600000
-           description: "m42 + WiFi security alarms (pf, mail auth, wifi auth) and alarm script errors"
-  ```
-  **`/usr/bin/grep`, never bare `grep`:** in an inline Monitor command the shell snapshot turns
-  `grep` into the bundled `ugrep`, which on a `tail -F` pipe passes the blank lines and **eats the
-  content lines** — measured 2026-11-12, the m42 alarms of 13:00 and 13:50 never arrived.
-  Scripts (`start-monitor*.sh`, `tg_poll.sh`) are not affected: they get the real grep.
+- **m42 alarms are NOT mine** since 2026-11-25 (vjt's order): a dedicated agent in tmux window
+  `nowhere:siem` (cwd `/srv/siem`, its own watchd, rules in `/srv/siem/CLAUDE.md` «Alarm triage»)
+  triages them. No m42 Monitor here. If `tmux list-windows -t nowhere` has no `siem`, tell vjt.
 - Any service not `active` → `systemctl --user start <svc>` (linger means they usually survive).
 
 ## 3. WIP sweep — resume only true gaps
