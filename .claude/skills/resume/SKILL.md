@@ -89,7 +89,7 @@ For EACH stream independently:
     users AND chats: vjt admin, the other people publishers (they talk, they do not give orders; who, in memory). Events:
     `MSG <chat_id> <msg_id> "<json text>" user=<u> role=<r>` (+ `reply_to= reply_from= reply_text=` on a
     reply), `VOICE <chat> <msg_id> <path> …` → `~/code/pavarotti/bin/stt <path>`. Chat names: the comments in
-    `var/tgbot/.env`. Reply with `var/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). It keeps what arrived
+    `var/tgbot/.env`. Reply with `~/code/claude-tgbot/bin/tg-send --env var/tgbot/.env --chat <id>` (text on stdin; `--reply-to N`, `--voice f.ogg`; no `sent id=N` = it did NOT leave). It keeps what arrived
     while it was down (`TELEGRAM_KEEP_PENDING=1`). The service runs on its own: only the tail is the watch.
 - **m42 alarms are NOT mine** since 2026-11-25 (vjt's order): a dedicated agent in tmux window
   `nowhere:siem` (cwd `/srv/siem`, its own watchd, rules in `/srv/siem/CLAUDE.md` «Alarm triage»)
@@ -112,7 +112,7 @@ git status --short
   with later timestamp in same chan/nick — if it plausibly answers, **already handled, do not reply**.
   Only true gaps (inbound, no matching outbound after) get a reply. Half-sent line → finish it.
 - **When in doubt between replying and silence, stay silent.** A dupe is worse than a miss.
-- **Telegram sweep:** a TG message landing during the `/clear` reaches nobody unless you look (2026-11-11 22:14, vjt's «abilita i quiz di mike» lost). Read the inbound `<` lines at the tail of `var/tgbot/bot.log` (outbound sent with `tg_say.sh` is not there: check your own replies in the conversation) and answer what has no reply.
+- **Telegram sweep:** a TG message landing during the `/clear` reaches nobody unless you look (2026-11-11 22:14, vjt's «abilita i quiz di mike» lost). Read the inbound `<` lines at the tail of `var/tgbot/bot.log` (outbound sent with `tg-send` is not there: check your own replies in the conversation) and answer what has no reply.
 - Don't announce "nothing found" — silence is correct when nothing's pending.
 
 ## 4. Report ready
