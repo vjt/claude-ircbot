@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/gate-permission.py"
+            "command": "python3 /home/vjt/code/claude-tgbot/hooks/gate-permission.py $CLAUDE_PROJECT_DIR/var/tgbot"
           }
         ]
       }
