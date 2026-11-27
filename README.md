@@ -458,6 +458,13 @@ The agent can ask a trusted IRC user for a new allow rule on the fly
 system prompt + the bot, not in the hook itself — the hook is just the
 enforcement point.
 
+An agent that also has a Telegram bridge can use
+[claude-tgbot](https://github.com/vjt/claude-tgbot)'s gate instead, same
+rules and grammar: the operator gets the blocked call as a DM with
+buttons (yes / always / no) and the gate waits for the tap. This repo's
+`.claude/settings.json` wires that one; point `PreToolUse` back at
+`.claude/hooks/gate-permission.py` for IRC notices.
+
 ### Idle tick
 
 Long channels grow boring if the agent only speaks when spoken to. The
