@@ -46,8 +46,8 @@ If `bot.log` tail shows no recent chatter (channel dead), fall back to a pure-Ma
 ### 3. Stop the Monitors
 
 Use `TaskStop` on **every** monitor task — `TaskList` first, then stop the Azzurra and Libera
-event streams and the Telegram poller (`tg_poll.sh`). The poller especially: leaving it running
-after the session dies means the next session's `getUpdates` gets `409 Conflict`.
+event streams, the Telegram tail included. The Telegram bridge itself (`vjt-claude-tgbot`) is a service
+and stays up: what arrives meanwhile is only in its logs (`var/tgbot/bot.log`), and `/resume` sweeps them.
 
 The bot itself is a systemd user service now (`vjt-claude-bot.service`) and is **not** coupled to the Monitor. The FIFO-`QUIT` in step 2 makes the bot disconnect gracefully and exit; systemd then sees it as a normal stop. Do NOT `systemctl --user stop` as well — the FIFO QUIT has already done it, and stacking the two races the reconnect window. Same applies to the sidecars: leave them alone, they'll keep running until next reboot / next `/start` cycle.
 

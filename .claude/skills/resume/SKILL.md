@@ -80,14 +80,17 @@ For EACH stream independently:
     which chat is which lives in `[[project_melablu_support]]` / `[[reference_telegram_bridge_handles]]`,
     not in this repo):
     ```
-    Monitor: command: bash <repo>/var/tg_poll.sh
+    Monitor: command: tail -F -n0 <repo>/var/tgbot/bot.stdout.log | grep --line-buffered -E '^(MSG|DOCUMENT|PHOTO|VOICE|COMMAND|CALLBACK|IDENTIFY|MARKUP_ERROR|ERROR|FATAL) '
              persistent: true, timeout_ms: 3600000
-             description: "Telegram @gazzurbo_bot messages (Melablu support + shared group)"
+             description: "Telegram @gazzurbo_bot events (claude-tgbot)"
     ```
-    Token lives at `~/.config/gazzurbo/token` (600, never printed); the poller persists its
-    `getUpdates` offset in `var/tg_offset`, so a restart replays nothing. Reply with
-    `var/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). **Only ONE poller may run** —
-    a second `getUpdates` on the same token gets `409 Conflict` and both starve.
+    Since 2026-11-27 the bridge is claude-tgbot, service `vjt-claude-tgbot` (consumer dir `var/tgbot/`:
+    `.env` with token and allowlist, 600, never printed; `bot.log`; voice notes land in `inbox/`). It trusts
+    users AND chats: vjt admin, the other people publishers (they talk, they do not give orders). Events:
+    `MSG <chat_id> <msg_id> "<json text>" user=<u> role=<r>` (+ `reply_to= reply_from= reply_text=` on a
+    reply), `VOICE <chat> <msg_id> <path> …` → `~/code/pavarotti/bin/stt <path>`. Chat names: the comments in
+    `var/tgbot/.env`. Reply with `var/tg_say.sh` (stdin, `TG_CHAT_ID=` to pick the chat). It keeps what arrived
+    while it was down (`TELEGRAM_KEEP_PENDING=1`). The service runs on its own: only the tail is the watch.
 - **m42 alarms are NOT mine** since 2026-11-25 (vjt's order): a dedicated agent in tmux window
   `nowhere:siem` (cwd `/srv/siem`, its own watchd, rules in `/srv/siem/CLAUDE.md` «Alarm triage»)
   triages them. No m42 Monitor here. If `tmux list-windows -t nowhere` has no `siem`, tell vjt.
@@ -109,7 +112,7 @@ git status --short
   with later timestamp in same chan/nick — if it plausibly answers, **already handled, do not reply**.
   Only true gaps (inbound, no matching outbound after) get a reply. Half-sent line → finish it.
 - **When in doubt between replying and silence, stay silent.** A dupe is worse than a miss.
-- **Telegram has no log to sweep:** a TG message landing during the `/clear` reaches nobody (2026-11-11 22:14, vjt's «abilita i quiz di mike» lost). Read the tail of the previous TG Monitor's output: `ls -t scratchpad/claude-1000/*/*/tasks/*.output | head` → `tail` the one whose lines start `TG chat=`, and answer what has no reply.
+- **Telegram sweep:** a TG message landing during the `/clear` reaches nobody unless you look (2026-11-11 22:14, vjt's «abilita i quiz di mike» lost). Read the inbound `<` lines at the tail of `var/tgbot/bot.log` (outbound sent with `tg_say.sh` is not there: check your own replies in the conversation) and answer what has no reply.
 - Don't announce "nothing found" — silence is correct when nothing's pending.
 
 ## 4. Report ready
