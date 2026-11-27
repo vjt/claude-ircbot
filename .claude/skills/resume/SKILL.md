@@ -80,7 +80,7 @@ For EACH stream independently:
     which chat is which lives in `[[project_melablu_support]]` / `[[reference_telegram_bridge_handles]]`,
     not in this repo):
     ```
-    Monitor: command: tail -F -n0 <repo>/var/tgbot/bot.stdout.log | grep --line-buffered -E '^(MSG|DOCUMENT|PHOTO|VOICE|COMMAND|CALLBACK|IDENTIFY|MARKUP_ERROR|ERROR|FATAL) '
+    Monitor: command: tail -F -n0 <repo>/var/tgbot/bot.stdout.log | grep --line-buffered -E '^(MSG|DOCUMENT|PHOTO|VOICE|COMMAND|CALLBACK|IDENTIFY|ERROR|FATAL) '
              persistent: true, timeout_ms: 3600000
              description: "Telegram @gazzurbo_bot events (claude-tgbot)"
     ```
