@@ -132,8 +132,7 @@ your network if it has services. Nothing to `pip install` unless you turn on
    `{"operator": "alice", "bot_nick": "mybot"}`
    ([Permission gate](#permission-gate-claude-code-hook)).
 
-9. **Start the session**, in tmux, in a window named `ircbot` (where the
-   watchdog looks for it):
+9. **Start the session**, in tmux (the watchdog types into its pane):
 
    ```bash
    tmux new-session -s claude -n ircbot
@@ -142,10 +141,10 @@ your network if it has services. Nothing to `pip install` unless you turn on
 
    then type `/start`.
 
-10. **Optional: the watchdog.** `systemd/aup-watchdog.service.example`, copied
-    to `~/.config/systemd/user/aup-watchdog.service` the same way, clears the
-    session when it is stuck on a refusal, too large or idle, then types
-    `/resume` ([Sidecars](#sidecars)).
+10. **Optional: the watchdog.** [claude-watchdog](https://github.com/vjt/claude-watchdog),
+    installed on its own with `WATCHDOG_SESSION_DIR` set to this checkout,
+    clears the session when it is stuck on a refusal, too large or idle, then
+    types `/resume` ([Sidecars](#sidecars)).
 
 ## Running it
 
