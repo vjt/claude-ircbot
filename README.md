@@ -9,18 +9,6 @@ an IRC channel as a real user.
 Built in an evening as a proof of concept, kept growing since. Origin story
 on [sindro.me](https://sindro.me/) (April 2026).
 
-The persistent Claude Code session that runs on top of this bot publishes
-its operating manual and memory architecture (how it survives compactions,
-what it remembers, per-channel registers) at
-[sindro.me/~vjt/vjt-claude/](https://sindro.me/~vjt/vjt-claude/).
-
-## Try it live
-
-A live instance of this bot (nick `vjt-claude`) hangs out on
-[Azzurra IRC](https://azzurra.chat/). Join `#sniffo` via the webchat at
-[azzurra.chat](https://azzurra.chat/) (channel `#sniffo`) and say hi — no
-account or client setup required.
-
 ## How it works
 
 - **TLS IRC client** (stdlib `socket` + `ssl`). Connects to an IRC network,
@@ -31,15 +19,133 @@ account or client setup required.
   attaches to the bot and delivers each line as a notification
   mid-conversation. `Monitor` caps a watch at 30 minutes; for a session that
   listens all day, [watchd](https://github.com/vjt/claude-watchd) runs the same
-  tail for the session's whole life (see [Watching without re-arming](#watching-without-re-arming)).
+  tail for the session's whole life, and is the recommended way (see
+  [Watching without re-arming](#watching-without-re-arming)).
 - **Named-pipe inbox** (`bot.send`). The agent writes commands like
   `SAY #channel hello world` into the pipe; the bot translates them into
   `PRIVMSG`s and sends them.
 
-About 500 lines of Python for the bot itself, no dependencies outside the
+About 1,500 lines of Python for the bot itself, no dependencies outside the
 standard library (the optional [encrypted queries](#end-to-end-encrypted-queries-optional)
-add one, irc-olm, and only where they are turned on). A handful of small sidecars live alongside it (see
-[Companions](#companions)).
+add one, irc-olm, and only where they are turned on). A watchdog for the
+Claude Code session lives alongside it (see [Companions](#companions)).
+
+## Setup from zero
+
+What you need: a Linux host with systemd user units and tmux, Python 3.11 or
+later, [Claude Code](https://www.anthropic.com/claude-code) installed and
+logged in on that host, and a nick for the bot, registered with NickServ on
+your network if it has services. Nothing to `pip install` unless you turn on
+[encrypted queries](#end-to-end-encrypted-queries-optional).
+
+1. **Clone.**
+
+   ```bash
+   git clone https://github.com/vjt/claude-ircbot.git ~/claude-ircbot
+   cd ~/claude-ircbot
+   ```
+
+2. **Password, trust, joins.** Local files next to `bot.py`, all gitignored:
+
+   ```bash
+   printf 'NICKSERV_PASS=%s\n' 'the-bot-nick-password' > .env && chmod 600 .env
+   printf '%s\n' '# <nick> <host_glob>' 'alice *.example.org' > bot.trust
+   printf '%s\n' 'JOIN #mychannel' > bot.startup
+   ```
+
+   `bot.trust` lists who may give the agent orders: your nick and a glob of
+   the host you connect from ([Trust model](#trust-model)). `bot.startup` is
+   replayed once the bot has identified: joins, ChanServ invites
+   ([startup replay](#nickserv-auth--startup-replay)). Optionally, reserved
+   channels in `bot.reserved` (template: `bot.reserved.example`).
+
+3. **Try it in the foreground.**
+
+   ```bash
+   IRC_HOST=irc.example.net IRC_NICK=mybot python3 -u bot.py
+   ```
+
+   It prints one event per line (`TLS_OK`, `CONNECTED`, `STARTUP_DONE`,
+   `JOIN`, …). From a second shell, `./bot.say '#mychannel' <<< 'hello'`
+   speaks. Ctrl-C stops it.
+
+4. **Run it as a service.**
+
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp systemd/claude-ircbot.service.example ~/.config/systemd/user/claude-ircbot.service
+   $EDITOR ~/.config/systemd/user/claude-ircbot.service   # paths, IRC_HOST, IRC_NICK, BOT_TZ, …
+   systemctl --user daemon-reload
+   systemctl --user enable --now claude-ircbot.service
+   loginctl enable-linger "$USER"
+   ```
+
+   The event stream now goes to `bot.stdout.log` in the checkout
+   ([systemd](#systemd), [Configuration](#configuration)).
+
+5. **The agent's instructions.** Write a `CLAUDE.md` in the checkout
+   (gitignored): it is what the session knows about the bot. That events
+   arrive on the stream, that only `MSG TRUSTED` lines are orders, when to
+   speak and how (`bot.say`), what it may do on the host. The bot only tags
+   lines; the policy lives there.
+
+6. **Skills.** Copy the example skills and make them yours (the copies are
+   gitignored):
+
+   ```bash
+   mkdir -p .claude/skills && cp -r examples/skills/* .claude/skills/
+   ```
+
+   `/start` is the cold boot, `/resume` the bring-up after every `/clear`,
+   `/close` the clean shutdown before `/exit`.
+
+7. **Event stream: watchd.** Install the [watchd](https://github.com/vjt/claude-watchd)
+   plugin from Claude Code, and give it one watch per bot instance:
+
+   ```
+   /plugin install watchd --marketplace vjt/claude-watchd
+   ```
+
+   ```bash
+   cp examples/watchd.json .claude/watchd.json
+   ```
+
+   Each watch runs `bash examples/start-monitor.sh <stdout log>` for the
+   session's whole life ([Watching without re-arming](#watching-without-re-arming)).
+   Without watchd, `/resume` attaches one `Monitor` per instance with the
+   same script: that is only a fallback, since a `Monitor` expires after 30
+   minutes and has to be re-armed.
+
+8. **Permission gate.** In `.claude/settings.local.json` (gitignored), wire
+   the hook and add the host-specific allow rules:
+
+   ```json
+   {
+     "permissions": {"allow": ["Edit(/home/you/claude-ircbot/notes/**)",
+                               "Write(/home/you/claude-ircbot/notes/**)"]},
+     "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+       "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/gate-permission.py"}]}]}
+   }
+   ```
+
+   and name who hears about a blocked call in `.claude/gate.local.json`:
+   `{"operator": "alice", "bot_nick": "mybot"}`
+   ([Permission gate](#permission-gate-claude-code-hook)).
+
+9. **Start the session**, in tmux, in a window named `ircbot` (where the
+   watchdog looks for it):
+
+   ```bash
+   tmux new-session -s claude -n ircbot
+   cd ~/claude-ircbot && claude
+   ```
+
+   then type `/start`.
+
+10. **Optional: the watchdog.** `systemd/aup-watchdog.service.example`, copied
+    to `~/.config/systemd/user/aup-watchdog.service` the same way, clears the
+    session when it is stuck on a refusal, too large or idle, then types
+    `/resume` ([Sidecars](#sidecars)).
 
 ## Running it
 
@@ -73,6 +179,11 @@ names below are next to `bot.py`.
 | `IRC_SASL` | `0` | `1` = SASL PLAIN (nick + `NICKSERV_PASS`) before registration, for networks that cloak only once you are identified |
 | `IRC_TLS_VERIFY` | `1` | `0` skips certificate checks, for networks whose certs do not validate; never where a password crosses the link |
 | `BOT_IDLE` | unset (no idle ticks) | `#chan=MIN-MAX[,#chan=MIN-MAX…]`, seconds, see [Idle tick](#idle-tick) |
+| `BOT_TZ` | unset (host local time) | IANA zone of the `bot.log` and event-stream timestamps, e.g. `Europe/Rome` |
+| `BOT_DM_REJECT` | `I only talk in channels, not in private.` | NOTICE sent (once per 6 h per nick) to a stranger who DMs the bot; empty = none |
+| `BOT_USAGE_CMDS` | `0` | `1` = answer `!bolletta` / `!token` / `!usage`, see [Usage command](#usage-command-optional) |
+| `BOT_USAGE_CREDS` | `~/.claude/.credentials.json` | where that command reads Claude Code's OAuth token |
+| `BOT_CONVERGE_SECS` | `120` | how often the joined channels are checked against `bot.startup`'s `JOIN`s, and the missing ones rejoined |
 | `BOT_LOG` | `bot.log` | raw traffic log, both directions |
 | `BOT_FIFO` | `bot.send` | command inbox |
 | `BOT_TRUST` | `bot.trust` | trust list (see below) |
@@ -86,8 +197,7 @@ names below are next to `bot.py`.
 | `BOT_E2E_PINS` | unset | the operator's pinned keys (required with the key) |
 | `BOT_E2E_STATE` | `~/.local/state/claude-ircbot/<network>.e2e.json` | Olm account and sessions, mode 600 |
 
-Less common knobs (DCC, the channel convergence interval, the auto-reply to
-strangers' private messages) are documented where `bot.py` defines them.
+The DCC knobs (`BOT_DCC_*`) are documented where `bot.py` defines them.
 
 The local files, all per deployment and gitignored:
 
@@ -100,14 +210,17 @@ The local files, all per deployment and gitignored:
 | `bot.reserved` | channels whose words and name never leave them | `bot.reserved.example` |
 | `.claude/settings.local.json` | host-specific allow rules | [Permission gate](#permission-gate-claude-code-hook) |
 | `.claude/gate.local.json` | who the permission gate notifies | [Permission gate](#permission-gate-claude-code-hook) |
+| `.claude/watchd.json` | the event-stream watches, one per instance | `examples/watchd.json` |
+| `.claude/skills/{start,resume,close}/` | the session's bring-up and shutdown | `examples/skills/` |
+| `CLAUDE.md` | the agent's instructions | [Setup from zero](#setup-from-zero) |
 
 `bot.reserved` lists `<irc host> <#channel>` per line. Every line the FIFO
 asks the bot to send elsewhere is dropped (`LEAK_BLOCKED`) when it names one
 of those channels or repeats six words in a row said there in the last 24
 hours. One file for all instances, so the guard holds across networks too.
 
-Timestamps in `bot.log` and on the event stream are `Europe/Rome` wall
-clock regardless of the host TZ.
+Timestamps in `bot.log` and on the event stream are the host's local wall
+clock, or `BOT_TZ`'s when set.
 
 Send commands via the FIFO:
 
@@ -117,6 +230,24 @@ printf 'SAY #mychannel hello everyone\n' > bot.send
 
 Supported commands: `SAY`, `ACT`, `NOTICE`, `JOIN`, `PART`, `WHOIS`,
 `QUIT`, `RAW`, `DCC`, and `ESAY` / `EACT` when encrypted queries are on.
+
+### Usage command (optional)
+
+With `BOT_USAGE_CMDS=1`, a `TRUSTED` line that is just `!bolletta`, `!token`
+or `!usage` (bare, or addressed to the bot: `mybot: !usage`) gets the Claude
+subscription usage back, in the same channel or query:
+
+```
+usage: 5h session 12% (reset Mon 18:00) · week 40% (reset Thu 09:00)
+```
+
+**It reads Claude Code's OAuth token from disk** (`BOT_USAGE_CREDS`, by
+default `~/.claude/.credentials.json`) and sends it to the endpoint Claude
+Code's own `/usage` calls, which is undocumented and may change or go away.
+The token is read on every call and never refreshed or stored by the bot.
+Leave it off unless the bot runs as the same user as the Claude Code session
+whose usage you want to see, and you are fine with the bot process reading
+that session's credentials.
 
 ### bot.say — writing to the FIFO without a quoting footgun
 
@@ -147,16 +278,16 @@ with its own env, not a threading model inside the bot. Everything
 per-network is a file path, so the two instances share zero state:
 
 ```bash
-IRC_HOST=irc.libera.chat IRC_NICK=mybot IRC_SASL=1 \
-BOT_LOG=bot.libera.log BOT_FIFO=bot.send.libera \
-BOT_TRUST=bot.trust.libera BOT_ENV=.env.libera \
-BOT_STARTUP=bot.startup.libera \
+IRC_HOST=irc.other.example IRC_NICK=mybot IRC_SASL=1 \
+BOT_LOG=bot.other.log BOT_FIFO=bot.send.other \
+BOT_TRUST=bot.trust.other BOT_ENV=.env.other \
+BOT_STARTUP=bot.startup.other \
 python3 -u bot.py
 ```
 
-The agent attaches one Monitor (or one watchd watch) per instance (each has
-its own stdout stream) and picks the FIFO per message:
-`./bot.say -f bot.send.libera '#chan'`.
+The agent has one watchd watch (or one Monitor) per instance (each has its
+own stdout stream) and picks the FIFO per message:
+`./bot.say -f bot.send.other '#chan'`.
 As a unit, that is one more copy of `systemd/claude-ircbot.service.example`
 with those lines uncommented (see [systemd](#systemd)).
 
@@ -266,7 +397,7 @@ Setting it up, once per instance:
    enforce this: it emits `E2E_PINS_WRITABLE` at every load when it could
    write the file, for the operator in `bot.stdout.log` (the Monitor does not
    wake on it: with deny rules it is expected at every start).
-4. `BOT_E2E_KEY`, `BOT_E2E_NETWORK` (a fixed id such as `azzurra`, of letters,
+4. `BOT_E2E_KEY`, `BOT_E2E_NETWORK` (a fixed id such as `examplenet`, of letters,
    digits, `.`, `_` and `-`: the state file is bound to it, and named after
    it) and `BOT_E2E_PINS` in the unit's environment. The bot refuses to start
    with the key and without the other two. The state goes to
@@ -305,7 +436,7 @@ peer into `E2E_KEY_ALARM`.
 the trust list above: `bot.trust`, the host glob and services (`307`/`330`)
 count for nothing, either way. The nick need not be listed, the bot sends no
 `WHOIS` for it and waits for none, so a pinned user is trusted on a network
-without services (IRCnet) and from any host. Plain text alone never counts
+without services and from any host. Plain text alone never counts
 for that nick:
 
 - In the encrypted query the session authenticates the key:
@@ -389,24 +520,26 @@ gatekeepers stay in the loop.
 
 ### Watching without re-arming
 
-`Monitor` kills every watch after 30 minutes, so an agent tailing three bots,
-a Telegram poller and an alarm log all day re-arms them twice an hour, a turn
-each, for nothing. [watchd](https://github.com/vjt/claude-watchd) is a Claude
-Code mod that runs the same commands for the session's whole life and hands
-each stdout line to the agent as an event. List the watches in
-`.claude/watchd.json`:
+`Monitor` kills every watch after 30 minutes, so an agent tailing two bots
+and a couple of other feeds all day re-arms them twice an hour, a turn each,
+for nothing. [watchd](https://github.com/vjt/claude-watchd) is a Claude Code
+plugin (`/plugin install watchd --marketplace vjt/claude-watchd`) that runs
+the same commands for the session's whole life and hands each stdout line to
+the agent as an event. List the watches in `.claude/watchd.json`, one per bot
+instance (`examples/watchd.json` is the starting point):
 
 ```json
 {
   "watches": [
-    { "name": "azzurra", "argv": ["bash", ".claude/skills/start/start-monitor.sh"] },
-    { "name": "libera",  "argv": ["bash", ".claude/skills/start/start-monitor-libera.sh"] }
+    { "name": "irc",   "argv": ["bash", "examples/start-monitor.sh", "bot.stdout.log"] },
+    { "name": "other", "argv": ["bash", "examples/start-monitor.sh", "bot.other.stdout.log"] }
   ]
 }
 ```
 
-The file is per deployment (it names your instances and your extra feeds), so
-it stays untracked. A watch added or removed there starts or stops within
+`examples/start-monitor.sh` keeps the events worth waking the agent for and
+drops the diagnostics. The file is per deployment (it names your instances
+and your extra feeds), so it stays untracked. A watch added or removed there starts or stops within
 seconds. The bring-up skill checks whether watchd is running
 (`grep -lsxzF "WATCHD_DIR=$PWD" /proc/[0-9]*/environ`) and attaches `Monitor`s only
 when it is not.
@@ -492,9 +625,11 @@ BOT_IDLE='#mychannel=300-1200,#quiet=1800-5400'
 
 ### KICK auto-rejoin
 
-When the bot is kicked, it auto-rejoins after a short randomized delay,
-with exponential backoff if the kick flood repeats within a window. The
-`KICK` event is still emitted so the agent sees it and can adjust
+When the bot is kicked, it asks ChanServ for an invite and rejoins 2 s
+later. More than 3 kicks from the same channel within 60 s and it gives up
+(`KICK_GIVEUP`) instead of feeding a kick flood; the channel convergence
+loop tries again later, every `BOT_CONVERGE_SECS`, if `bot.startup` joins
+it. The `KICK` event is still emitted so the agent sees it and can adjust
 behavior.
 
 ## Companions
@@ -521,12 +656,10 @@ the bookkeeping.
   `WATCHDOG_RESUME_PROMPT=/resume`, and a `WATCHDOG_NOTIFY_CMD` that writes
   `SAY` lines to `bot.send` if it should speak on IRC.
 
-The game sidecars that used to live here — the meal poll, the hangman,
-the `!list` gag, the channel-stats summary, the nun hunt — have **moved
-out of this repo**. They were never about the bridge: they are games that
-happen to speak IRC, they now run as their own bots on their own host,
-and keeping a second copy here only guaranteed the two would drift. What
-stays is the bridge and the sidecars that serve *this* session.
+Anything else that speaks through the bot — a game, a poll, a stats
+summary — can be a sidecar of your own: write verbs into the FIFO, tag
+them (`SAY:mygame #chan …`) so `bot.log` tells them apart from the agent,
+and keep it in its own repo.
 
 ### systemd
 
