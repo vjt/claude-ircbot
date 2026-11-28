@@ -8,7 +8,6 @@ bot.startup
 bot.startup.*
 bot.log
 bot.*.log
-aup_watchdog.log
 scrub.log
 
 # Who the bot trusts, whose DMs pass, which channels are reserved: per deployment.

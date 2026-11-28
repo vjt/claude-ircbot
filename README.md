@@ -513,29 +513,13 @@ the bookkeeping.
 
 ### Sidecars
 
-- **`aup_watchdog.py`** — tails the active Claude Code session JSONL and
-  injects `/clear` into the tmux pane running the agent on three
-  triggers: AUP refusal, assistant-turn count over a threshold, and
-  JSONL-mtime idle. Skips when an assistant tool_use is pending a user
-  tool_result, so it never clears mid-tool-call. Also posts a short
-  memory-scrub prompt after the clear so the agent trims its rolling
-  activity log.
-
-`aup_watchdog.py` is configured by environment variables too. The defaults
-fit a session started in this checkout, in tmux window `ircbot`, talking
-through this checkout's `bot.send`, and send nothing to IRC:
-
-| Variable | Default | What it is |
-|---|---|---|
-| `WATCHDOG_PROJECT_DIR` | `~/.claude/projects/<checkout path, every non-alphanumeric as ->` | where Claude Code keeps the session's transcripts |
-| `WATCHDOG_FIFO` | `bot.send` in the checkout | bot FIFO its IRC lines go to |
-| `WATCHDOG_WINDOW` | `ircbot` | tmux window of the agent's pane |
-| `WATCHDOG_PANE_CMD` / `WATCHDOG_PANE_INDEX` | `claude` / any | which pane of that window |
-| `WATCHDOG_ESCALATE_NICK` | unset (silent) | nick told when the pane stays unfindable for 5 min |
-| `WATCHDOG_ANNOUNCE_TO` | unset (silent) | channel or nick told about a forced (refusal / AUP) `/clear` |
-| `WATCHDOG_LABEL` | `watchdog` | prefix of its IRC lines |
-| `WATCHDOG_SCRUB_PROMPT` / `WATCHDOG_PRE_CLEAR_PROMPT` | `/resume` / built-in | what it types after and before a `/clear` |
-| `WATCHDOG_GRANT_AS` | unset | user owning the transcripts, when they are another user's |
+- **[claude-watchdog](https://github.com/vjt/claude-watchdog)** — not in
+  this repo any more: one watchdog for any long-lived Claude Code session.
+  It types `/clear` and a resume prompt into the agent's pane when the
+  context passes a budget, on a refusal or after a long idle, and only
+  between turns. For this bridge: `WATCHDOG_SESSION_DIR=<checkout>`,
+  `WATCHDOG_RESUME_PROMPT=/resume`, and a `WATCHDOG_NOTIFY_CMD` that writes
+  `SAY` lines to `bot.send` if it should speak on IRC.
 
 The game sidecars that used to live here — the meal poll, the hangman,
 the `!list` gag, the channel-stats summary, the nun hunt — have **moved
@@ -552,8 +536,6 @@ paths, networks and nicks, so they stay out of the repo.
 - `claude-ircbot.service.example` — one bot instance. One copy per
   network, each with its own `IRC_HOST` / `IRC_NICK` and, past the first,
   its own `BOT_LOG` / `BOT_FIFO` / `BOT_TRUST` / `BOT_ENV` / `BOT_STARTUP`.
-- `aup-watchdog.service.example` — the watchdog sidecar, one per Claude
-  Code session.
 - `e2e.conf.example` — a drop-in that turns encrypted queries on for one bot
   unit. It holds the key, so it never enters the repo either: it goes in
   `~/.config/systemd/user/<unit>.service.d/e2e.conf`.

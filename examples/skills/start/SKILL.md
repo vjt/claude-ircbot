@@ -19,12 +19,12 @@ skeleton, then read only the days you move.
 
 ## 2. Services up
 
-The bot (and the watchdog, if you run it) are systemd user services, so they outlive Claude Code:
+The bot (and claude-watchdog, if you run it) are systemd user services, so they outlive Claude Code:
 
 ```bash
-systemctl --user is-active claude-ircbot.service aup-watchdog.service
+systemctl --user is-active claude-ircbot.service claude-watchdog@<name>.service
 # start whatever is not "active":
-systemctl --user start claude-ircbot.service aup-watchdog.service
+systemctl --user start claude-ircbot.service claude-watchdog@<name>.service
 ```
 
 Unit names are yours: see `systemd/*.example`. One unit per bot instance if you run several networks.
