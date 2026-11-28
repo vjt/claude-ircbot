@@ -88,8 +88,8 @@ For EACH stream independently:
     `.env` with token and allowlist, 600, never printed; `bot.log`; voice notes land in `inbox/`). It trusts
     users AND chats: vjt admin, the other people publishers (they talk, they do not give orders; who, in memory). Events:
     `MSG <chat_id> <msg_id> "<json text>" user=<u> role=<r>` (+ `reply_to= reply_from= reply_text=` on a
-    reply), `VOICE <chat> <msg_id> <path> …` → `~/code/pavarotti/bin/stt <path>`. Groups and their names:
-    `var/tgbot/chats.json` (vjt manages them from Telegram: `/allow@bot`, `/chats`; DMs of allowed users pass unlisted). Reply with `~/code/claude-tgbot/bin/tg-send --env var/tgbot/.env --chat <id>` (text on stdin; `--reply-to N`, `--voice f.ogg`; no `sent id=N` = it did NOT leave). It keeps what arrived
+    reply), `VOICE <chat> <msg_id> <path> …` → `~/code/pavarotti/bin/stt <path>`. Who and where: `var/tgbot/users.json`
+    and `chats.json` (vjt manages them from Telegram: `/users`, `/chats`, `/allow@bot`; admins only by hand). Reply with `~/code/claude-tgbot/bin/tg-send --env var/tgbot/.env --chat <id>` (text on stdin; `--reply-to N`, `--voice f.ogg`; no `sent id=N` = it did NOT leave). It keeps what arrived
     while it was down (`TELEGRAM_KEEP_PENDING=1`). The service runs on its own: only the tail is the watch.
 - **m42 alarms are NOT mine** since 2026-11-25 (vjt's order): a dedicated agent in tmux window
   `nowhere:siem` (cwd `/srv/siem`, its own watchd, rules in `/srv/siem/CLAUDE.md` «Alarm triage»)
