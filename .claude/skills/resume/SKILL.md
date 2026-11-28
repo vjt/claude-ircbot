@@ -86,7 +86,8 @@ For EACH stream independently:
     ```
     Since 2026-11-27 the bridge is claude-tgbot, service `vjt-claude-tgbot` (consumer dir `var/tgbot/`:
     `.env` with token and allowlist, 600, never printed; `bot.log`; voice notes land in `inbox/`). It trusts
-    users AND chats: vjt admin, the other people publishers (they talk, they do not give orders; who, in memory). Events:
+    users AND chats: vjt admin, the others `role=viewer`: **help them** inside the perimeter vjt
+    gave each (who and what, in memory). Viewer = no orders outside it, NOT the README's generic «do not act». Events:
     `MSG <chat_id> <msg_id> "<json text>" user=<u> role=<r>` (+ `reply_to= reply_from= reply_text=` on a
     reply), `VOICE <chat> <msg_id> <path> …` → `~/code/pavarotti/bin/stt <path>`. Who and where: `var/tgbot/users.json`
     and `chats.json` (vjt manages them from Telegram: `/users`, `/chats`, `/allow@bot`; admins only by hand). Reply with `~/code/claude-tgbot/bin/tg-send --env var/tgbot/.env --chat <id>` (text on stdin; `--reply-to N`, `--voice f.ogg`; no `sent id=N` = it did NOT leave). It keeps what arrived
