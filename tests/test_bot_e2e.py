@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bot  # noqa: E402
 from leak_guard import LeakGuard  # noqa: E402
 
-HOST = "vjt.openssl.it"
+HOST = "alice.example.org"
 # A reserved channel of ours, on the network the bot is on.
 RESERVED = os.path.join(TMP, "test.reserved")
 with open(RESERVED, "w") as f:
@@ -64,17 +64,18 @@ class BotE2ETest(unittest.TestCase):
         self.sent = []
         self._saved = (bot.send_raw, bot.bridge, bot.trust_rules, set(bot.verified),
                        dict(bot.dm_held), set(bot.whois_pending), bot.dm_allow_rules,
-                       bot.usage_reply, bot.me, set(bot.joined), bot.leak_guard)
+                       bot.usage_reply, bot.me, set(bot.joined), bot.leak_guard, bot.USAGE_ON)
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
         bot.leak_guard = LeakGuard("irc.example.net", RESERVED, os.path.join(TMP, "reserved.tsv"))
         bot.me = bot.NICK                           # a test may rename us
-        bot.trust_rules = [("vjt", "*.openssl.it")]
+        bot.trust_rules = [("alice", "*.example.org")]
         bot.verified.clear()
-        bot.verified.add("vjt")
+        bot.verified.add("alice")
         bot.dm_held.clear()
         bot.dm_allow_rules = []
         self.replies = []
         bot.usage_reply = self.replies.append       # nothing is fetched
+        bot.USAGE_ON = True                         # BOT_USAGE_CMDS=1
         self.threads = set(threading.enumerate())
         self.out = io.StringIO()
         self._redirect = contextlib.redirect_stdout(self.out)
@@ -83,7 +84,7 @@ class BotE2ETest(unittest.TestCase):
     def tearDown(self):
         self._redirect.__exit__(None, None, None)
         (bot.send_raw, bot.bridge, bot.trust_rules, verified, held, pending, bot.dm_allow_rules,
-         bot.usage_reply, bot.me, joined, bot.leak_guard) = self._saved
+         bot.usage_reply, bot.me, joined, bot.leak_guard, bot.USAGE_ON) = self._saved
         bot.joined.clear()
         bot.joined.update(joined)
         bot.verified.clear()
@@ -107,71 +108,71 @@ class BotE2ETest(unittest.TestCase):
 
     def test_esay_and_eact_go_to_the_bridge(self):
         bot.bridge = FakeBridge()
-        bot.run_cmd("ESAY vjt ciao")
-        bot.run_cmd("EACT:tag vjt saluta")
+        bot.run_cmd("ESAY alice ciao")
+        bot.run_cmd("EACT:tag alice saluta")
         self.assertEqual(bot.bridge.calls, [
-            ("send_text", ("vjt", "ciao"), {"action": False, "origin": None}),
-            ("send_text", ("vjt", "saluta"), {"action": True, "origin": "tag"})])
+            ("send_text", ("alice", "ciao"), {"action": False, "origin": None}),
+            ("send_text", ("alice", "saluta"), {"action": True, "origin": "tag"})])
         self.assertEqual(self.sent, [])
 
     def test_esay_and_eact_decode_newline_and_backslash_escapes(self):
         # The FIFO is one command per line: `\n` is how a multi-line encrypted
         # message gets in, `\\` how a literal backslash survives (claude-ircbot#8).
         bot.bridge = FakeBridge()
-        bot.run_cmd(r"ESAY vjt riga uno\nriga due \\n non va a capo \t resta")
-        bot.run_cmd(r"EACT vjt saluta\ne va")
+        bot.run_cmd(r"ESAY alice riga uno\nriga due \\n non va a capo \t resta")
+        bot.run_cmd(r"EACT alice saluta\ne va")
         self.assertEqual(bot.bridge.calls, [
-            ("send_text", ("vjt", "riga uno\nriga due \\n non va a capo \\t resta"),
+            ("send_text", ("alice", "riga uno\nriga due \\n non va a capo \\t resta"),
              {"action": False, "origin": None}),
-            ("send_text", ("vjt", "saluta\ne va"), {"action": True, "origin": None})])
+            ("send_text", ("alice", "saluta\ne va"), {"action": True, "origin": None})])
 
     def test_a_say_the_reply_mode_encrypts_keeps_backslashes_literal(self):
         # Only ESAY/EACT decode: a SAY is plain text unless the bot happens to
         # remember the conversation, and must read the same either way.
-        bot.bridge = FakeBridge(encrypt_to={"vjt"})
-        bot.run_cmd(r"SAY vjt C:\new")
-        self.assertEqual(bot.bridge.calls[-1][1], ("vjt", r"C:\new"))
+        bot.bridge = FakeBridge(encrypt_to={"alice"})
+        bot.run_cmd(r"SAY alice C:\new")
+        self.assertEqual(bot.bridge.calls[-1][1], ("alice", r"C:\new"))
 
     def test_esay_to_a_channel_is_refused(self):
         bot.bridge = FakeBridge()
-        bot.run_cmd("ESAY #sbiffo segreto")
+        bot.run_cmd("ESAY #chan segreto")
         self.assertEqual(bot.bridge.calls, [])
         self.assertTrue(any("CMD_ERROR" in e and "e2e-channel" in e for e in self.events()))
         self.assertNotIn("segreto", self.out.getvalue())
 
     def test_esay_without_e2e_is_an_error_that_never_echoes_the_text(self):
         bot.bridge = None
-        bot.run_cmd("ESAY vjt segreto")
+        bot.run_cmd("ESAY alice segreto")
         self.assertTrue(any("CMD_ERROR" in e and "e2e-off" in e for e in self.events()))
         self.assertNotIn("segreto", self.out.getvalue())
         self.assertEqual(self.sent, [])
 
     def test_a_failing_e2e_command_is_reported_redacted(self):
         bot.bridge = FakeBridge(raises=ValueError("boom: segreto"))
-        bot.run_cmd("ESAY vjt segreto")
+        bot.run_cmd("ESAY alice segreto")
         (err,) = [e for e in self.events() if "CMD_ERROR" in e]
         self.assertIn("ValueError", err)
-        self.assertIn("ESAY vjt [7 bytes]", err)
+        self.assertIn("ESAY alice [7 bytes]", err)
         self.assertNotIn("segreto", self.out.getvalue())
 
     def test_say_to_a_nick_in_an_encrypted_conversation_is_encrypted(self):
-        bot.bridge = FakeBridge(encrypt_to={"vjt"})
-        bot.run_cmd("SAY vjt risposta")
-        bot.run_cmd("ACT vjt annuisce")
+        bot.bridge = FakeBridge(encrypt_to={"alice"})
+        bot.run_cmd("SAY alice risposta")
+        bot.run_cmd("ACT alice annuisce")
         self.assertEqual([c[0] for c in bot.bridge.calls], ["send_text", "send_text"])
         self.assertEqual(bot.bridge.calls[1][2]["action"], True)
         self.assertEqual(self.sent, [])
 
     def test_a_failing_encrypted_say_is_reported_redacted_too(self):
-        bot.bridge = FakeBridge(encrypt_to={"vjt"}, raises=ValueError("segreto"))
-        bot.run_cmd("SAY vjt segreto")
+        bot.bridge = FakeBridge(encrypt_to={"alice"}, raises=ValueError("segreto"))
+        bot.run_cmd("SAY alice segreto")
         self.assertNotIn("segreto", self.out.getvalue())
 
     def test_say_stays_plain_elsewhere(self):
-        bot.bridge = FakeBridge(encrypt_to={"vjt"})
-        bot.run_cmd("SAY lucy in chiaro")
-        bot.run_cmd("SAY #sbiffo in chiaro")
-        self.assertEqual(self.sent, ["PRIVMSG lucy :in chiaro", "PRIVMSG #sbiffo :in chiaro"])
+        bot.bridge = FakeBridge(encrypt_to={"alice"})
+        bot.run_cmd("SAY bob in chiaro")
+        bot.run_cmd("SAY #chan in chiaro")
+        self.assertEqual(self.sent, ["PRIVMSG bob :in chiaro", "PRIVMSG #chan :in chiaro"])
         self.assertEqual(bot.bridge.calls, [])
 
     def test_esay_goes_through_the_leak_guard(self):
@@ -183,21 +184,21 @@ class BotE2ETest(unittest.TestCase):
     def test_a_held_dm_whose_release_fails_is_dropped_and_the_rest_still_go(self):
         def dead():
             raise RuntimeError("the pacer's thread died: nothing goes out")
-        bot.verified.discard("vjt")
-        bot.dm_hold("vjt", HOST, "primo", on_release=dead)
-        bot.dm_hold("vjt", HOST, "secondo")
-        bot.verified.add("vjt")
-        bot.dm_flush("vjt", "307")
+        bot.verified.discard("alice")
+        bot.dm_hold("alice", HOST, "primo", on_release=dead)
+        bot.dm_hold("alice", HOST, "secondo")
+        bot.verified.add("alice")
+        bot.dm_flush("alice", "307")
         self.assertEqual([e.split(" ", 1)[1] for e in self.events()], [
-            f"DM_DROPPED FROM=vjt HOST={HOST} LEN=5 error:RuntimeError",
-            f"MSG TRUSTED FROM=vjt HOST={HOST} TO={bot.NICK} HELD=1 BODY=secondo"])
+            f"DM_DROPPED FROM=alice HOST={HOST} LEN=5 error:RuntimeError",
+            f"MSG TRUSTED FROM=alice HOST={HOST} TO={bot.NICK} HELD=1 BODY=secondo"])
 
     def test_a_held_dm_pushed_out_of_the_queue_says_so(self):
-        bot.verified.discard("vjt")
+        bot.verified.discard("alice")
         for i in range(bot.DM_HOLD_MAX + 1):
-            bot.dm_hold("vjt", HOST, f"m{i}")
+            bot.dm_hold("alice", HOST, f"m{i}")
         self.assertEqual([e.split(" ", 1)[1] for e in self.events()],
-                         [f"DM_DROPPED FROM=vjt HOST={HOST} LEN=2 evicted"])
+                         [f"DM_DROPPED FROM=alice HOST={HOST} LEN=2 evicted"])
 
     def test_a_blocked_encrypted_send_never_quotes_its_text(self):
         # The reason names the kind of match only: the words matched, or the
@@ -217,7 +218,7 @@ class BotE2ETest(unittest.TestCase):
             self.assertFalse(any(text in line for line in blocked + logged), (text, logged))
         self.assertEqual(bot.bridge.calls, [])
         # in plain text the reason stays whole, as before
-        bot.run_cmd("SAY #sbiffo guarda #secret")
+        bot.run_cmd("SAY #chan guarda #secret")
         self.assertIn("name:#secret", self.events()[-1])
 
     # --- inbound routing ---------------------------------------------------------------
@@ -225,110 +226,125 @@ class BotE2ETest(unittest.TestCase):
     def test_e2e_lines_go_to_the_bridge_and_never_become_ctcp(self):
         bot.bridge = FakeBridge()
         line = "\x01E2E MSG AAAAAAAAAAA 1/1 eyJ2IjoxfQ==\x01"
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :{line}")
-        self.assertEqual(bot.bridge.calls, [("on_e2e_line", ("vjt", HOST, bot.NICK, line), {})])
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :{line}")
+        self.assertEqual(bot.bridge.calls, [("on_e2e_line", ("alice", HOST, bot.NICK, line), {})])
         self.assertFalse(any(" CTCP " in e for e in self.events()))
 
     def test_server_facts_reach_the_bridge(self):
         bot.bridge = FakeBridge()
-        bot.handle_server_line(f":srv 005 {bot.NICK} NETWORK=Azzurra CASEMAPPING=ascii :are supported")
-        bot.handle_server_line(f":{bot.NICK}!claude@host.example JOIN :#sbiffo")
+        bot.handle_server_line(f":srv 005 {bot.NICK} NETWORK=ExampleNet CASEMAPPING=ascii :are supported")
+        bot.handle_server_line(f":{bot.NICK}!claude@host.example JOIN :#chan")
         bot.handle_server_line(f":{bot.NICK}!claude@host.example NICK :{bot.NICK}_")
         self.assertEqual([c[:2] for c in bot.bridge.calls], [
-            ("on_isupport", (["NETWORK=Azzurra", "CASEMAPPING=ascii"],)),
+            ("on_isupport", (["NETWORK=ExampleNet", "CASEMAPPING=ascii"],)),
             ("on_own_mask", (f"{bot.NICK}!claude@host.example",)),
             ("on_own_nick", (f"{bot.NICK}_",))])
 
     def test_someone_elses_nick_change_is_not_ours(self):
         bot.bridge = FakeBridge()
-        bot.handle_server_line(f":vjt!v@{HOST} NICK :vjt_")
+        bot.handle_server_line(f":alice!v@{HOST} NICK :alice_")
         self.assertEqual(bot.bridge.calls, [])
 
     def test_a_held_order_emits_nothing_yet(self):
         bot.bridge = FakeBridge(verdict="held")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.NICK}: riavvia")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.NICK}: riavvia")
         self.assertFalse(any(" MSG " in e for e in self.events()))
 
     def test_an_unchallenged_line_from_a_pinned_user_is_untrusted(self):
         bot.bridge = FakeBridge(verdict="unchallenged")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :chiacchiere")
-        self.assertTrue(any(f"MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST={HOST} TO=#sbiffo "
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :chiacchiere")
+        self.assertTrue(any(f"MSG UNTRUSTED WHY=unchallenged FROM=alice HOST={HOST} TO=#chan "
                             "BODY=chiacchiere" in e for e in self.events()))
 
     # --- the bot's own commands and bot.dmallow, under the trust verdict --------------
 
     def test_a_trusted_bot_command_is_answered(self):
         bot.bridge = None
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
-        self.assertEqual(self.answered(), ["#sbiffo"])
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :!bolletta")
+        self.assertEqual(self.answered(), ["#chan"])
+
+    def test_bot_commands_are_off_without_bot_usage_cmds(self):
+        bot.bridge = None
+        bot.USAGE_ON = False
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :!bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :!usage")
+        self.assertEqual(self.answered(), [])
 
     def test_a_bot_command_addressed_to_the_bot_is_answered(self):
         bot.bridge = None
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}: !bolletta")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me.upper()}, !token")
-        self.assertEqual(self.answered(), ["#sbiffo", "#sbiffo"])
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.me}: !bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.me.upper()}, !token")
+        self.assertEqual(self.answered(), ["#chan", "#chan"])
 
     def test_a_bot_command_addressed_elsewhere_or_with_more_text_is_not_one(self):
         bot.bridge = None
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :lucy: !bolletta")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}: !bolletta adesso")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.me}x: !bolletta")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :lucy, {bot.me}: !bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :bob: !bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.me}: !bolletta adesso")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.me}x: !bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :bob, {bot.me}: !bolletta")
         self.assertEqual(self.answered(), [])
 
     def test_a_bot_command_addressed_to_the_nick_we_hold_now_is_answered(self):
         bot.bridge = None
         bot.handle_server_line(f":{bot.NICK}!c@host.example NICK :[c]laude|")   # ours
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #a : [c]laude|: !bolletta ")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #b :claude: !bolletta")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #c :{bot.NICK}: !bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #a : [c]laude|: !bolletta ")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #b :claude: !bolletta")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #c :{bot.NICK}: !bolletta")
         self.assertEqual(self.answered(), ["#a"])
 
     def test_a_bot_command_shown_unchallenged_is_not_answered(self):
         bot.bridge = FakeBridge(verdict="unchallenged")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
-        self.assertTrue(any(" MSG UNTRUSTED WHY=unchallenged FROM=vjt " in e
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :!bolletta")
+        self.assertTrue(any(" MSG UNTRUSTED WHY=unchallenged FROM=alice " in e
                             for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
 
     def test_a_bot_command_held_for_whois_is_answered_once_verified(self):
         bot.bridge = None
-        bot.verified.discard("vjt")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
+        bot.verified.discard("alice")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
         self.assertEqual(self.answered(), [])
-        bot.handle_server_line(f":srv 307 {bot.NICK} vjt :has identified for this nick")
-        self.assertTrue(any(" MSG TRUSTED FROM=vjt " in e and " HELD=1 " in e
+        bot.handle_server_line(f":srv 307 {bot.NICK} alice :has identified for this nick")
+        self.assertTrue(any(" MSG TRUSTED FROM=alice " in e and " HELD=1 " in e
                             for e in self.events()), self.events())
-        self.assertEqual(self.answered(), ["vjt"])
+        self.assertEqual(self.answered(), ["alice"])
 
     def test_a_dmallowed_stranger_still_gets_through_untrusted(self):
         bot.bridge = None
-        bot.dm_allow_rules = [("puppy", "*.example.org")]
-        bot.handle_server_line(f":puppy!p@p.example.org PRIVMSG {bot.NICK} :ciao")
-        self.assertTrue(any(f" MSG UNTRUSTED FROM=puppy HOST=p.example.org TO={bot.NICK} BODY=ciao"
+        bot.dm_allow_rules = [("carol", "*.example.org")]
+        bot.handle_server_line(f":carol!p@p.example.org PRIVMSG {bot.NICK} :ciao")
+        self.assertTrue(any(f" MSG UNTRUSTED FROM=carol HOST=p.example.org TO={bot.NICK} BODY=ciao"
                             in e for e in self.events()), self.events())
 
     def test_a_listed_nick_takes_the_trust_path_whatever_dmallow_says(self):
         bot.bridge = None
-        bot.dm_allow_rules = [("vjt", "*.openssl.it")]
-        bot.verified.discard("vjt")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :ciao")
-        self.assertTrue(any(" DM_HELD FROM=vjt " in e for e in self.events()), self.events())
+        bot.dm_allow_rules = [("alice", "*.example.org")]
+        bot.verified.discard("alice")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :ciao")
+        self.assertTrue(any(" DM_HELD FROM=alice " in e for e in self.events()), self.events())
         self.assertFalse(any(" MSG " in e for e in self.events()), self.events())
 
 
 class StartE2ETest(unittest.TestCase):
     def setUp(self):
         from irc_olm import store
+        from irc_olm.engine import Engine
         self.dir = tempfile.mkdtemp()
-        self.key = os.path.join(self.dir, "azzurra.key")
+        self.key = os.path.join(self.dir, "examplenet.key")
         store.generate_key_file(self.key)
+        # The peer's master key, made here: a pin is a public key, and a test
+        # needs nobody's real one.
+        peer_key = os.path.join(self.dir, "alice.key")
+        store.generate_key_file(peer_key)
+        self.peer_master = Engine(os.path.join(self.dir, "alice.json"), store.load_key(peer_key),
+                                  network="examplenet", nick="alice", ident="a",
+                                  pins={}).fingerprint
         self.pins = os.path.join(self.dir, "e2e.pins")
         with open(self.pins, "w") as f:
-            f.write("vjt Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE\n")
+            f.write(f"alice {self.peer_master}\n")
         self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
                        bot.fakelag)
-        bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = self.key, "azzurra", self.pins
+        bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = self.key, "examplenet", self.pins
         bot.E2E_STATE = os.path.join(self.dir, "state.json")
 
     def tearDown(self):
@@ -351,9 +367,8 @@ class StartE2ETest(unittest.TestCase):
         self.assertIsNotNone(bot.bridge)
         (ready,) = [e for e in events if " E2E_READY " in e]
         self.assertIn(f"KEY={bot.bridge.engine.fingerprint}", ready)
-        self.assertIn("NETWORK=azzurra", ready)
-        self.assertEqual(bot.bridge.engine.pinned("vjt").master,
-                         "Y3E1/yaaT7cNiOsD0+Xlzctrb2YJM/WU7oUdRYuJ2GE")
+        self.assertIn("NETWORK=examplenet", ready)
+        self.assertEqual(bot.bridge.engine.pinned("alice").master, self.peer_master)
 
     def test_every_line_the_bot_writes_is_charged_once_to_the_flood_bank(self):
         self.start()
@@ -362,10 +377,10 @@ class StartE2ETest(unittest.TestCase):
         try:
             import time
             lag = bot.fakelag
-            bot.send_raw("PRIVMSG #sbiffo :" + "y" * 380)          # chat: charged here
+            bot.send_raw("PRIVMSG #chan :" + "y" * 380)          # chat: charged here
             after_chat = lag.bank(time.monotonic())
             self.assertGreater(after_chat, 4.0)
-            bot._paced_write("vjt", "\x01E2E MSG AAAAAAAAAAA 1/1 eA==\x01")  # charged by the pacer
+            bot._paced_write("alice", "\x01E2E MSG AAAAAAAAAAA 1/1 eA==\x01")  # charged by the pacer
             self.assertLessEqual(lag.bank(time.monotonic()), after_chat)
             self.assertEqual(len(written), 2)
         finally:
@@ -382,9 +397,9 @@ class StartE2ETest(unittest.TestCase):
 
         def message(verb):
             msgid = framing.new_msgid()
-            return msgid, [("vjt", body) for body in framing.fragment(
+            return msgid, [("alice", body) for body in framing.fragment(
                 verb, framing.encode_payload({"v": 1}), src=bot.bridge.engine.did,
-                dst=framing.ANY, own_mask=f"{bot.NICK}!c@h", target="vjt", msgid=msgid)]
+                dst=framing.ANY, own_mask=f"{bot.NICK}!c@h", target="alice", msgid=msgid)]
         keyreq_id, keyreq = message("KEYREQ")
         _, text = message("MSG")
 
@@ -408,7 +423,7 @@ class StartE2ETest(unittest.TestCase):
         events = out.getvalue().splitlines()
         self.assertEqual(sum(" ERROR send-fail " in e for e in events), 3, events)
         self.assertEqual([e.split(" ", 1)[1] for e in events if " E2E_SEND_FAILED " in e],
-                         ["E2E_SEND_FAILED TO=vjt REASON=send-failed LOST=1"])
+                         ["E2E_SEND_FAILED TO=alice REASON=send-failed LOST=1"])
 
     def test_the_state_defaults_outside_the_repo_one_file_per_network(self):
         # Not in the repo, the bot's Claude session's working tree, and not
@@ -419,13 +434,13 @@ class StartE2ETest(unittest.TestCase):
         xdg = os.path.join(self.dir, "xdg")
         with mock.patch.dict(os.environ, {"XDG_STATE_HOME": xdg}):
             self.start()
-        state = os.path.join(xdg, "claude-ircbot", "azzurra.e2e.json")
+        state = os.path.join(xdg, "claude-ircbot", "examplenet.e2e.json")
         self.assertEqual(str(bot.bridge.engine.state_path), state)
         self.assertTrue(os.path.exists(state))
         self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(state)).st_mode), 0o700)
 
     def test_a_network_id_that_cannot_name_a_file_is_refused(self):
-        for network in ("../azzurra", "azzurra/x", "az zurra", ""):
+        for network in ("../examplenet", "examplenet/x", "example net", ""):
             with self.subTest(network=network):
                 bot.E2E_NETWORK, bot.bridge = network, None
                 with self.assertRaises(ValueError):
@@ -444,36 +459,37 @@ class StartE2ETest(unittest.TestCase):
 
 
 class RealBridgeTest(unittest.TestCase):
-    """bot.py with the real bridge from _start_e2e and a peer engine for vjt;
+    """bot.py with the real bridge from _start_e2e and a peer engine for alice;
     the pacer is a synchronous capture, and the server lines are hand-fed."""
 
     def setUp(self):
         from irc_olm import store
         from irc_olm.engine import Engine
         self.dir = tempfile.mkdtemp()
-        key, vjt_key = os.path.join(self.dir, "bot.key"), os.path.join(self.dir, "vjt.key")
+        key, alice_key = os.path.join(self.dir, "bot.key"), os.path.join(self.dir, "alice.key")
         store.generate_key_file(key)
-        store.generate_key_file(vjt_key)
-        self.vjt = Engine(os.path.join(self.dir, "vjt.json"), store.load_key(vjt_key),
-                          network="azzurra", nick="vjt", ident="v", pins={})
+        store.generate_key_file(alice_key)
+        self.alice = Engine(os.path.join(self.dir, "alice.json"), store.load_key(alice_key),
+                          network="examplenet", nick="alice", ident="v", pins={})
         pins = os.path.join(self.dir, "e2e.pins")
         with open(pins, "w") as f:
-            f.write(f"vjt {self.vjt.fingerprint}\n")
+            f.write(f"alice {self.alice.fingerprint}\n")
         self._saved = (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge,
                        bot.fakelag, bot.send_raw, bot.trust_rules, set(bot.verified),
                        set(bot.whois_pending), dict(bot.dm_held), bot.registered,
                        bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me,
-                       bot.dm_allow_rules, bot.usage_reply, set(bot.joined))
+                       bot.dm_allow_rules, bot.usage_reply, set(bot.joined), bot.USAGE_ON)
         bot.startup_fired = True                        # no startup replay thread here
         bot.me = bot.NICK                               # the nick the bridge is built with
         bot.dm_allow_rules = []
         self.replies = []
         bot.usage_reply = self.replies.append           # nothing is fetched
-        bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = key, "azzurra", pins
+        bot.USAGE_ON = True                             # BOT_USAGE_CMDS=1
+        bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS = key, "examplenet", pins
         bot.E2E_STATE = os.path.join(self.dir, "state.json")
-        self.sent, self.to_vjt, self.vjt_got = [], [], []
+        self.sent, self.to_alice, self.alice_got = [], [], []
         bot.send_raw = lambda s, origin=None: self.sent.append(s)
-        bot.trust_rules = [("vjt", "*.openssl.it"), ("lucy", "*.openssl.it")]
+        bot.trust_rules = [("alice", "*.example.org"), ("bob", "*.example.org")]
         bot.verified.clear()
         bot.whois_pending.clear()
         bot.dm_held.clear()
@@ -481,8 +497,8 @@ class RealBridgeTest(unittest.TestCase):
         self._redirect = contextlib.redirect_stdout(self.out)
         self._redirect.__enter__()
         bot._start_e2e()
-        self.vjt.set_pins({bot.NICK: bot.bridge.engine.fingerprint})
-        bot.bridge._submit = lambda outbound, urgent, reactive: self.to_vjt.extend(outbound) or []
+        self.alice.set_pins({bot.NICK: bot.bridge.engine.fingerprint})
+        bot.bridge._submit = lambda outbound, urgent, reactive: self.to_alice.extend(outbound) or []
         self.threads = set(threading.enumerate())
 
     def tearDown(self):
@@ -490,7 +506,7 @@ class RealBridgeTest(unittest.TestCase):
         (bot.E2E_KEY, bot.E2E_NETWORK, bot.E2E_PINS, bot.E2E_STATE, bot.bridge, bot.fakelag,
          bot.send_raw, bot.trust_rules, verified, pending, held, bot.registered,
          bot.startup_fired, bot.tmp_nick, bot.ghost_needed, bot.me, bot.dm_allow_rules,
-         bot.usage_reply, joined) = self._saved
+         bot.usage_reply, joined, bot.USAGE_ON) = self._saved
         bot.joined.clear()
         bot.joined.update(joined)
         bot.verified.clear()
@@ -511,17 +527,17 @@ class RealBridgeTest(unittest.TestCase):
         return self.replies
 
     def deliver(self, result):
-        """The wire between vjt's engine and the bot, until it is quiet."""
+        """The wire between alice's engine and the bot, until it is quiet."""
         from irc_olm.engine import Received
         pending = list(result.outbound)
         for _ in range(100):
             if pending:
                 _, body = pending.pop(0)
-                bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :{body}")
-            elif self.to_vjt:
-                _, body = self.to_vjt.pop(0)
-                got = self.vjt.receive(bot.NICK, body)
-                self.vjt_got += [e.inner for e in got.events if isinstance(e, Received)]
+                bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :{body}")
+            elif self.to_alice:
+                _, body = self.to_alice.pop(0)
+                got = self.alice.receive(bot.NICK, body)
+                self.alice_got += [e.inner for e in got.events if isinstance(e, Received)]
                 pending += got.outbound
             else:
                 return
@@ -531,120 +547,121 @@ class RealBridgeTest(unittest.TestCase):
         bot.handle_server_line(f":srv 307 {bot.NICK} {nick} :has identified for this nick")
 
     def written(self):
-        """A session vjt's device has written on (wire v2 sends a CHAL only
-        there, O1): the bot writes first, and vjt's device asks for the bot's
+        """A session alice's device has written on (wire v2 sends a CHAL only
+        there, O1): the bot writes first, and alice's device asks for the bot's
         device list over the session it opened. Nothing reaches the stream."""
         from irc_olm.engine import Result
-        bot.bridge.send_text("vjt", "ciao", action=False, origin=None)
+        bot.bridge.send_text("alice", "ciao", action=False, origin=None)
         self.deliver(Result())
-        self.vjt_got.clear()
+        self.alice_got.clear()
 
     def test_a_pinned_users_plaintext_pm_is_challenged_without_waiting_for_whois(self):
         self.written()
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #sbiffo")
-        self.assertNotIn("WHOIS vjt", self.sent)        # layer 1 is not asked
-        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #chan")
+        self.assertNotIn("WHOIS alice", self.sent)        # layer 1 is not asked
+        self.assertTrue(any(" ORDER_HELD FROM=alice " in e for e in self.events()), self.events())
         self.assertFalse(any(" MSG " in e or " DM_HELD " in e for e in self.events()),
                          self.events())
-        self.assertTrue(self.to_vjt)                    # its challenge
+        self.assertTrue(self.to_alice)                    # its challenge
 
     def stream(self):
         """The events, without their [HH:MM] prefix."""
         return [e.split(" ", 1)[1] for e in self.events()]
 
     def ack(self):
-        """vjt's client answers the one challenge it got."""
+        """alice's client answers the one challenge it got."""
         from irc_olm.engine import Result
-        self.deliver(Result())                          # the CHAL reaches vjt's client
-        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
-        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.deliver(Result())                          # the CHAL reaches alice's client
+        (chal,) = [inner for inner in self.alice_got if inner["t"] == "chal"]
+        self.deliver(self.alice.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
 
     def test_a_pinned_user_off_layer_one_is_trusted_by_the_key(self):
-        # IRCnet: no services, no 307, any host, and bot.trust need not list him.
-        for rules in ([("vjt", "*.elsewhere.example")], []):
+        # A network without services: no 307, any host, and bot.trust need not
+        # list her.
+        for rules in ([("alice", "*.elsewhere.example")], []):
             with self.subTest(rules=rules):
                 bot.trust_rules = rules
                 self.sent.clear()
                 self.out.truncate(0)
                 self.out.seek(0)
-                self.deliver(self.vjt.send(bot.NICK, {"t": "text", "body": "ciao"}))
+                self.deliver(self.alice.send(bot.NICK, {"t": "text", "body": "ciao"}))
                 self.assertEqual([e for e in self.stream() if e.startswith("MSG ")], [
-                    f"MSG TRUSTED ENCRYPTED=1 FROM=vjt HOST={HOST} TO={bot.NICK} BODY=ciao"])
+                    f"MSG TRUSTED ENCRYPTED=1 FROM=alice HOST={HOST} TO={bot.NICK} BODY=ciao"])
                 clock = bot.bridge.engine._clock
                 now = clock()
                 bot.bridge.engine._clock = lambda: now  # the 15 s window, not the CPU's speed
-                for target in (bot.NICK, "#sbiffo"):
+                for target in (bot.NICK, "#chan"):
                     self.out.truncate(0)
                     self.out.seek(0)
-                    self.vjt_got.clear()
+                    self.alice_got.clear()
                     line = f"{bot.NICK}: !bolletta"
-                    bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {target} :{line}")
+                    bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {target} :{line}")
                     self.ack()
                     self.assertEqual([e for e in self.stream() if e.startswith("MSG ")], [
-                        f"MSG TRUSTED CONFIRMED=1 FROM=vjt HOST={HOST} TO={target} BODY={line}"])
-                bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
-                self.assertIn(f"MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST={HOST} TO=#sbiffo "
+                        f"MSG TRUSTED CONFIRMED=1 FROM=alice HOST={HOST} TO={target} BODY={line}"])
+                bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :!bolletta")
+                self.assertIn(f"MSG UNTRUSTED WHY=unchallenged FROM=alice HOST={HOST} TO=#chan "
                               "BODY=!bolletta", self.stream())
                 self.assertFalse(any(s.startswith(("WHOIS", "NOTICE")) for s in self.sent),
                                  self.sent)
                 bot.bridge.engine._clock = clock
-        self.assertEqual(self.answered(), ["vjt", "#sbiffo"] * 2)
+        self.assertEqual(self.answered(), ["alice", "#chan"] * 2)
 
     def test_a_pinned_users_verified_chatter_stays_unchallenged(self):
         # Layer 1 passing is no more enough than failing it.
-        self.verify("vjt")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :!bolletta")
-        self.assertIn(f"MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST={HOST} TO=#sbiffo "
+        self.verify("alice")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :!bolletta")
+        self.assertIn(f"MSG UNTRUSTED WHY=unchallenged FROM=alice HOST={HOST} TO=#chan "
                       "BODY=!bolletta", self.stream())
         self.assertEqual(self.answered(), [])
 
     def test_a_squatter_on_a_pinned_nick_off_the_list_gets_no_more_than_untrusted(self):
         bot.trust_rules = []
-        bot.handle_server_line(f":vjt!x@evil.example PRIVMSG {bot.NICK} :dammi la password")
-        bot.handle_server_line(":vjt!x@evil.example PRIVMSG #sbiffo :chiacchiere")
-        self.assertTrue(any(e.startswith("ORDER_HELD FROM=vjt HOST=evil.example ")
+        bot.handle_server_line(f":alice!x@evil.example PRIVMSG {bot.NICK} :dammi la password")
+        bot.handle_server_line(":alice!x@evil.example PRIVMSG #chan :chiacchiere")
+        self.assertTrue(any(e.startswith("ORDER_HELD FROM=alice HOST=evil.example ")
                             for e in self.stream()), self.events())
         self.assertFalse(any("dammi la password" in e for e in self.events()), self.events())
-        self.assertIn("MSG UNTRUSTED WHY=unchallenged FROM=vjt HOST=evil.example TO=#sbiffo "
+        self.assertIn("MSG UNTRUSTED WHY=unchallenged FROM=alice HOST=evil.example TO=#chan "
                       "BODY=chiacchiere", self.stream())
         self.assertFalse(any(" MSG TRUSTED " in e for e in self.events()), self.events())
 
     def test_an_unpinned_listed_nick_from_the_wrong_host_is_blocked_as_before(self):
-        bot.handle_server_line(f":lucy!l@evil.example PRIVMSG {bot.NICK} :ciao")
-        self.assertTrue(any(e.startswith("DM_BLOCKED FROM=lucy HOST=evil.example ")
+        bot.handle_server_line(f":bob!l@evil.example PRIVMSG {bot.NICK} :ciao")
+        self.assertTrue(any(e.startswith("DM_BLOCKED FROM=bob HOST=evil.example ")
                             and "host-mismatch" in e for e in self.stream()), self.events())
-        bot.handle_server_line(f":lucy!l@evil.example PRIVMSG #sbiffo :{bot.NICK}: !bolletta")
-        self.assertIn(f"MSG UNTRUSTED FROM=lucy HOST=evil.example TO=#sbiffo "
+        bot.handle_server_line(f":bob!l@evil.example PRIVMSG #chan :{bot.NICK}: !bolletta")
+        self.assertIn(f"MSG UNTRUSTED FROM=bob HOST=evil.example TO=#chan "
                       f"BODY={bot.NICK}: !bolletta", self.stream())
-        self.assertIn("TRUST_DENIED lucy evil.example host-mismatch", self.stream())
-        self.assertEqual(self.to_vjt, [])
+        self.assertIn("TRUST_DENIED bob evil.example host-mismatch", self.stream())
+        self.assertEqual(self.to_alice, [])
         self.assertEqual(self.answered(), [])
 
     def test_a_pm_held_for_whois_whose_nick_is_pinned_meanwhile_is_challenged(self):
         from irc_olm import store
         from irc_olm.engine import Engine
-        bot.handle_server_line(f":lucy!l@{HOST} PRIVMSG {bot.NICK} :cancella tutto")
-        self.assertTrue(any(e.startswith("DM_HELD FROM=lucy ") for e in self.stream()))
-        lucy_key = os.path.join(self.dir, "lucy.key")
-        store.generate_key_file(lucy_key)
-        lucy = Engine(os.path.join(self.dir, "lucy.json"), store.load_key(lucy_key),
-                      network="azzurra", nick="lucy", ident="l", pins={})
+        bot.handle_server_line(f":bob!l@{HOST} PRIVMSG {bot.NICK} :cancella tutto")
+        self.assertTrue(any(e.startswith("DM_HELD FROM=bob ") for e in self.stream()))
+        bob_key = os.path.join(self.dir, "bob.key")
+        store.generate_key_file(bob_key)
+        bob = Engine(os.path.join(self.dir, "bob.json"), store.load_key(bob_key),
+                      network="examplenet", nick="bob", ident="l", pins={})
         new = bot.E2E_PINS + ".new"
         with open(new, "w") as f:
-            f.write(f"vjt {self.vjt.fingerprint}\nlucy {lucy.fingerprint}\n")
+            f.write(f"alice {self.alice.fingerprint}\nbob {bob.fingerprint}\n")
         os.replace(new, bot.E2E_PINS)
         bot.bridge.tick()
-        self.verify("lucy")
-        self.assertTrue(any(e.startswith("ORDER_HELD FROM=lucy ") for e in self.stream()),
+        self.verify("bob")
+        self.assertTrue(any(e.startswith("ORDER_HELD FROM=bob ") for e in self.stream()),
                         self.events())
         self.assertFalse(any(e.startswith("MSG ") for e in self.stream()), self.events())
 
     def test_a_listed_users_plaintext_pm_without_a_pin_is_released_as_before(self):
-        bot.handle_server_line(f":lucy!l@{HOST} PRIVMSG {bot.NICK} :ciao")
-        self.verify("lucy")
-        self.assertTrue(any(f" MSG TRUSTED FROM=lucy HOST={HOST} TO={bot.NICK} HELD=1 BODY=ciao"
+        bot.handle_server_line(f":bob!l@{HOST} PRIVMSG {bot.NICK} :ciao")
+        self.verify("bob")
+        self.assertTrue(any(f" MSG TRUSTED FROM=bob HOST={HOST} TO={bot.NICK} HELD=1 BODY=ciao"
                             in e for e in self.events()), self.events())
-        self.assertEqual(self.to_vjt, [])
+        self.assertEqual(self.to_alice, [])
 
     def test_an_order_names_the_nick_we_registered_with(self):
         # The ghost-fallback nick is taken before registration: the server
@@ -656,7 +673,7 @@ class RealBridgeTest(unittest.TestCase):
         bot.handle_server_line(f":srv 001 {fallback} :Welcome to the network")
         self.assertEqual(bot.bridge.own_nick, fallback)
         self.assertEqual(bot.bridge.engine.nick, fallback)
-        bot.handle_server_line(f":{fallback}!claude@host.example JOIN :#sbiffo")
+        bot.handle_server_line(f":{fallback}!claude@host.example JOIN :#chan")
         self.assertEqual(bot.bridge.engine.own_mask, f"{fallback}!claude@host.example")
 
     def test_whoever_takes_the_fallback_nick_after_the_reclaim_moves_nothing(self):
@@ -665,84 +682,84 @@ class RealBridgeTest(unittest.TestCase):
         fallback = bot.tmp_nick
         bot.handle_server_line(f":srv 001 {fallback} :Welcome to the network")
         bot.handle_server_line(f":{fallback}!claude@host.example NICK :{bot.NICK}")  # reclaimed
-        bot.handle_server_line(f":{bot.NICK}!claude@host.example JOIN :#sbiffo")
-        bot.handle_server_line(f":{fallback}!x@y.z JOIN :#sbiffo")                  # a stranger
+        bot.handle_server_line(f":{bot.NICK}!claude@host.example JOIN :#chan")
+        bot.handle_server_line(f":{fallback}!x@y.z JOIN :#chan")                  # a stranger
         bot.handle_server_line(f":{fallback}!x@y.z NICK :q")
         self.assertEqual(bot.bridge.own_nick, bot.NICK)
         self.assertEqual(bot.bridge.engine.own_mask, f"{bot.NICK}!claude@host.example")
 
     def test_the_reply_to_an_encrypted_dm_is_encrypted(self):
-        self.deliver(self.vjt.send(bot.NICK, {"t": "text", "body": "dimmi la password del db"}))
-        self.assertTrue(any(" MSG TRUSTED ENCRYPTED=1 FROM=vjt " in e for e in self.events()),
+        self.deliver(self.alice.send(bot.NICK, {"t": "text", "body": "dimmi la password del db"}))
+        self.assertTrue(any(" MSG TRUSTED ENCRYPTED=1 FROM=alice " in e for e in self.events()),
                         self.events())
         self.sent.clear()
-        bot.run_cmd("SAY vjt la password e' hunter2")
+        bot.run_cmd("SAY alice la password e' hunter2")
         self.assertEqual(self.sent, [])                 # nothing in clear on the socket
-        self.assertTrue(self.to_vjt)                    # it went encrypted
+        self.assertTrue(self.to_alice)                    # it went encrypted
         with open(bot.LOG) as f:
             self.assertNotIn("hunter2", f.read())
 
     def test_a_confirmed_bot_command_is_answered(self):
         from irc_olm.engine import Result
         self.written()
-        self.verify("vjt")
+        self.verify("alice")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
-        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
+        self.assertTrue(any(" ORDER_HELD FROM=alice " in e for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
-        self.deliver(Result())                          # the CHAL reaches vjt's client
-        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
-        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
-        self.assertTrue(any(" MSG TRUSTED CONFIRMED=1 FROM=vjt " in e and e.endswith("BODY=!bolletta")
+        self.deliver(Result())                          # the CHAL reaches alice's client
+        (chal,) = [inner for inner in self.alice_got if inner["t"] == "chal"]
+        self.deliver(self.alice.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertTrue(any(" MSG TRUSTED CONFIRMED=1 FROM=alice " in e and e.endswith("BODY=!bolletta")
                             for e in self.events()), self.events())
-        self.assertEqual(self.answered(), ["vjt"])
+        self.assertEqual(self.answered(), ["alice"])
 
     def test_a_bot_command_without_a_307_is_answered_only_once_confirmed(self):
         from irc_olm.engine import Result
         self.written()
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
-        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :!bolletta")
+        self.assertTrue(any(" ORDER_HELD FROM=alice " in e for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
-        self.deliver(Result())                          # the CHAL reaches vjt's client
-        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
-        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
-        self.assertEqual(self.answered(), ["vjt"])
+        self.deliver(Result())                          # the CHAL reaches alice's client
+        (chal,) = [inner for inner in self.alice_got if inner["t"] == "chal"]
+        self.deliver(self.alice.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertEqual(self.answered(), ["alice"])
 
     def test_a_pinned_users_addressed_bot_command_is_answered_in_the_channel_once_confirmed(self):
         from irc_olm.engine import Result
         self.written()
-        self.verify("vjt")
+        self.verify("alice")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.NICK}: !bolletta")
-        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.NICK}: !bolletta")
+        self.assertTrue(any(" ORDER_HELD FROM=alice " in e for e in self.events()), self.events())
         self.assertEqual(self.answered(), [])
-        self.deliver(Result())                          # the CHAL reaches vjt's client
-        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
-        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
-        self.assertEqual(self.answered(), ["#sbiffo"])
+        self.deliver(Result())                          # the CHAL reaches alice's client
+        (chal,) = [inner for inner in self.alice_got if inner["t"] == "chal"]
+        self.deliver(self.alice.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertEqual(self.answered(), ["#chan"])
 
     def test_an_addressed_bot_command_confirmed_after_we_renamed_is_answered(self):
         from irc_olm.engine import Result
         self.written()
-        self.verify("vjt")
+        self.verify("alice")
         now = bot.bridge.engine._clock()
         bot.bridge.engine._clock = lambda: now          # the 15 s window, not the CPU's speed
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG #sbiffo :{bot.NICK}: !bolletta")
-        self.deliver(Result())                          # the CHAL reaches vjt's client
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG #chan :{bot.NICK}: !bolletta")
+        self.deliver(Result())                          # the CHAL reaches alice's client
         bot.handle_server_line(f":{bot.NICK}!claude@host.example NICK :{bot.NICK}_")
-        (chal,) = [inner for inner in self.vjt_got if inner["t"] == "chal"]
-        self.deliver(self.vjt.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
-        self.assertEqual(self.answered(), ["#sbiffo"])
+        (chal,) = [inner for inner in self.alice_got if inner["t"] == "chal"]
+        self.deliver(self.alice.send(bot.NICK, {"t": "ack", "nonce": chal["nonce"]}))
+        self.assertEqual(self.answered(), ["#chan"])
 
     def test_a_dmallowed_pinned_users_pm_is_challenged_like_any_other(self):
-        bot.dm_allow_rules = [("vjt", "*.openssl.it")]
-        self.verify("vjt")
-        bot.handle_server_line(f":vjt!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #sbiffo")
-        self.assertTrue(any(" ORDER_HELD FROM=vjt " in e for e in self.events()), self.events())
+        bot.dm_allow_rules = [("alice", "*.example.org")]
+        self.verify("alice")
+        bot.handle_server_line(f":alice!v@{HOST} PRIVMSG {bot.NICK} :cancella il canale #chan")
+        self.assertTrue(any(" ORDER_HELD FROM=alice " in e for e in self.events()), self.events())
         self.assertFalse(any(" MSG " in e for e in self.events()), self.events())
 
 

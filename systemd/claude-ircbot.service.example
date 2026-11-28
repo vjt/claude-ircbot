@@ -26,6 +26,13 @@ Environment=IRC_NICK=<nick>
 #Environment=IRC_TLS_VERIFY=0
 #Environment=IRC_BIND=<source address>
 #Environment="BOT_IDLE=#chan=300-1200,#other=600-2400"
+# Time zone of the bot.log / event stream timestamps; unset = host local time.
+#Environment=BOT_TZ=Europe/Rome
+# NOTICE sent once per 6 h to a stranger who DMs the bot; empty = no reply.
+#Environment="BOT_DM_REJECT=I only talk in channels, not in private."
+# !bolletta / !token / !usage for trusted users: reads Claude Code's OAuth
+# token from ~/.claude/.credentials.json (README "Usage command").
+#Environment=BOT_USAGE_CMDS=1
 # Per-instance files: the defaults (bot.log, bot.send, bot.trust, .env,
 # bot.startup next to bot.py) suit ONE instance; give every other its own.
 #Environment=BOT_LOG=/path/to/claude-ircbot/bot.<network>.log

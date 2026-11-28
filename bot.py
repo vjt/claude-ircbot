@@ -21,17 +21,15 @@ Minimal IRC bot bridging a claude-code conversation <-> an IRC network.
                                In ESAY/EACT text `\\n` is a line break and
                                `\\\\` a backslash.
 
-  Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:impiccato`).
+  Any verb may carry an origin tag as `VERB:<tag>` (e.g. `SAY:mysidecar`).
   The tag changes NOTHING on the wire — it is only stamped into bot.log,
-  right after the direction marker, as `HH:MM:SS > [impiccato] PRIVMSG ...`.
-  It exists because the stats ingest classified every outbound line as the
-  LLM speaking, while five sidecars (impiccato, cena, next, list, stats)
-  share this FIFO and are plain deterministic code. Untagged lines keep
-  the exact old format, so old readers are unaffected.
+  right after the direction marker, as `HH:MM:SS > [mysidecar] PRIVMSG ...`.
+  It lets a log reader tell the agent's lines from those of the sidecars,
+  plain deterministic programs that share this FIFO. Untagged lines keep
+  the plain format, so readers that ignore tags are unaffected.
 
   The tag rides ON the line and never on a separate marker line: bot.py is
-  threaded, two concurrent sends would pair a marker with the wrong line
-  (vjt's ruling, 2026-08-26: "tenere context su due righe no").
+  threaded, and two concurrent sends could pair a marker with the wrong line.
 """
 import base64
 import fnmatch
@@ -44,7 +42,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from leak_guard import LeakGuard
 
@@ -66,34 +64,30 @@ NICK = _cfg("IRC_NICK", "")
 IDENT = _cfg("IRC_IDENT", "claude")
 REAL = _cfg("IRC_REAL", "github.com/vjt/claude-ircbot")
 
-# Source address to bind before connecting. Empty = let the kernel pick, which
-# is what every instance did until now. It exists because two bots can share a
-# jail and still need two different vhosts: on Azzurra the vhost is the rDNS of
-# the address we come from, so the address IS the identity, and the jail's
-# default source would hand both bots the same one. Order of vjt, #sbiffo
-# 2026-09-09 23:48. Port stays 0 — we want the address, not a fixed port.
+# Source address to bind before connecting. Empty = let the kernel pick. It
+# exists because two bots can share a host and still need two different vhosts:
+# where a network's vhost is the rDNS of the address we come from, the address
+# IS the identity, and the host's default source would hand both bots the same
+# one. Port stays 0 — we want the address, not a fixed port.
 BIND = _cfg("IRC_BIND", "")
 
-# TLS certificate verification. Default ON — Azzurra and Libera both present a
-# chain that validates against the system CA bundle, and there is a password on
-# the wire there (NickServ), so the default must stay strict.
+# TLS certificate verification. Default ON: most networks present a chain that
+# validates against the system CA bundle, and a NickServ password crosses the
+# link, so the default must stay strict.
 #
-# IRC_TLS_VERIFY=0 drops to CERT_NONE. It exists for IRCnet (vjt's order,
-# 2026-08-25): of 24 IRCnet servers probed with `openssl s_client
-# -verify_hostname`, exactly ONE (ircnet.hostsailor.com) presented a cert that
-# validates, and that one flaps — the rest are expired, self-signed, or carry a
-# name that does not match the one we dial. No password is sent there (no
-# services, no NickServ), and orders on that network count only end-to-end
-# (ENCRYPTED=1 / CONFIRMED=1), which an attacker on the unverified TLS can read
-# around, drop or delay but not forge.
+# IRC_TLS_VERIFY=0 drops to CERT_NONE, for a network whose servers mostly
+# present expired or self-signed certs, or a name that does not match the one
+# we dial. Use it only where no password is sent (no services, no NickServ) and
+# orders count only end-to-end (ENCRYPTED=1 / CONFIRMED=1), which an attacker on
+# the unverified TLS can read around, drop or delay but not forge.
 TLS_VERIFY = _cfg("IRC_TLS_VERIFY", "1") not in ("0", "no", "off", "false")
 
 # SASL PLAIN with NickServ's account (NICK as account, NICKSERV_PASS as
-# password), done before registration completes. It exists for Libera, where
+# password), done before registration completes. It exists for networks where
 # the user cloak only lands once we are identified: identifying to NickServ
-# after 001 shows the home IP in the meantime (vjt, 2026-11-06: "non voglio piu
-# leakare l'ip di casa"). If SASL fails we QUIT instead of registering in clear,
-# and systemd's backoff retries. Off by default: Azzurra's services lack SASL.
+# after 001 shows the real host in the meantime. If SASL fails we QUIT instead
+# of registering in clear, and systemd's backoff retries. Off by default: not
+# every network's services support SASL.
 SASL = _cfg("IRC_SASL", "0") not in ("0", "no", "off", "false")
 
 LOG = _cfg("BOT_LOG", os.path.join(HERE, "bot.log"))
@@ -112,7 +106,7 @@ RESERVED_STORE = _cfg("BOT_RESERVED_STORE", os.path.join(HERE, "reserved_recent.
 # dependency, so an instance without E2E stays stdlib-only and unchanged.
 # One identity per network: each instance has its own key, state and network id.
 # The network id binds the state file, so it must never change for an instance
-# (the server name can: IRCnet's already did). The state defaults to
+# (unlike the server or network name, which can change). The state defaults to
 # $XDG_STATE_HOME/claude-ircbot/<network id>.e2e.json: out of the repo, and one
 # per instance. The key and the state are secrets the bot's Claude session must
 # not reach either (README "Out of the session's reach").
@@ -129,11 +123,12 @@ bridge = None  # e2e_bridge.Bridge when E2E is on
 # is on: send_raw() charges every line, so E2E backs off while the bot talks.
 fakelag = None
 
-# Wall-clock timestamps in Europe/Rome (CET/CEST, DST-aware) instead of the
-# host's UTC. bot.log + the event stream were UTC until 2026-07-02, when vjt
-# asked for Italian local time. Explicit zoneinfo so it stays correct whatever
-# the host TZ is (pi5 runs UTC).
-_TZ = ZoneInfo("Europe/Rome")
+# Time zone of the wall-clock timestamps in bot.log and on the event stream.
+# BOT_TZ names an IANA zone (e.g. Europe/Rome), DST-aware whatever the host's
+# own TZ is; unset = the host's local time. check_config() resolves it, so a
+# bad name stops the bot at startup with a plain message.
+TZ_NAME = _cfg("BOT_TZ", "")
+_TZ = None  # None = local time
 
 
 def _now(fmt):
@@ -164,7 +159,7 @@ startup_fired = False
 # that window hit 433 pre-001 and just gave up -> registration never completed
 # -> recv timeout -> systemd restart -> flap loop for the whole 7min. Instead:
 # on a pre-001 433 take a throwaway nick to reach 001, GHOST the stale nick from
-# services, reclaim it, then IDENTIFY. (vjt 2026-07-20: "fatti un ghost on connect".)
+# services, reclaim it, then IDENTIFY.
 registered = False      # True once we've received 001 (registration complete)
 ghost_needed = False    # True while we hold a temp nick and still want NICK back
 ghost_tries = 0         # reclaims re-sent after a 433: services can be slower than the 4s beat
@@ -226,9 +221,9 @@ kick_lock = threading.Lock()
 KICK_WINDOW = 60.0
 KICK_MAX = 3
 
-# Channel convergence (vjt 2026-10-02, after Convento sat banned out of
-# #cybernet for who knows how long: "metti un cazzo di loop che ogni x secondi
-# prova a far convergere i chan configurati e i chan joinati"). Configured =
+# Channel convergence: every CONVERGE_SECS, bring the joined channels back in
+# line with the configured ones, so a ban, a kick past the rejoin limit or a
+# lost JOIN does not leave the bot out of a channel indefinitely. Configured =
 # the JOIN lines of bot.startup, re-read every tick so an edit takes effect
 # live. Joined = what the server echoed back for our own nick. Every missing
 # channel gets its startup lines replayed (ChanServ INVITE + JOIN). One
@@ -308,8 +303,8 @@ def converge_loop() -> None:
 
 def emit(kind, *parts):
     # [HH:MM] prefix gives the Monitor/Claude a real time anchor per event
-    # instead of extrapolating elapsed time from turn order (vjt 2026-06-07).
-    # No seconds by request. start-monitor.sh's grep tolerates this prefix.
+    # instead of extrapolating elapsed time from turn order. Minutes only;
+    # the monitor script's grep (examples/start-monitor.sh) tolerates it.
     print(f"[{_now('%H:%M')}] " + kind + " " + " ".join(str(p) for p in parts), flush=True)
 
 
@@ -333,10 +328,9 @@ def load_trust():
 
 def load_dm_allow():
     """bot.dmallow: `nick host_glob` lines whose DMs get through as UNTRUSTED.
-    Readable, never authoritative — the trust list stays the only authority
-    (vjt 2026-10-20, puppy: «allow sui suoi dm solo ma NON trusted»). It is
-    for nicks outside bot.trust: a listed nick's DMs take the trust path,
-    whatever bot.dmallow says."""
+    Readable, never authoritative — the trust list stays the only authority.
+    It is for nicks outside bot.trust: a listed nick's DMs take the trust
+    path, whatever bot.dmallow says."""
     global dm_allow_rules
     out = []
     try:
@@ -387,8 +381,8 @@ def trust_check(nick, host):
     return (True, "ok")
 
 
-# Hard block on private messages from strangers (vjt 2026-08-03). The written
-# policy alone is not enough: by the time Claude can apply it, the payload is
+# Hard block on private messages from strangers. A written policy alone is not
+# enough: by the time Claude can apply it, the payload is
 # already in its context. Dropping at the bot is the only real filter.
 #
 # The gate is `is_trust_listed`, NOT full `trust_check`: full trust needs a 307
@@ -404,10 +398,7 @@ SERVICE_NICKS = {
     "nickserv", "chanserv", "memoserv", "operserv", "hostserv",
     "botserv", "helpserv", "statserv", "global", "services",
 }
-DM_REJECT_MSG = _cfg(
-    "BOT_DM_REJECT",
-    "Con me si parla in canale, non in privato. / I only talk in channels, not in private.",
-)
+DM_REJECT_MSG = _cfg("BOT_DM_REJECT", "I only talk in channels, not in private.")
 DM_REJECT_COOLDOWN = 6 * 3600.0
 dm_rejected: dict[str, float] = {}  # nick_lower -> monotonic ts of last auto-reply
 dm_lock = threading.Lock()
@@ -427,9 +418,9 @@ def dm_reject_once(nick):
     nick. NOTICE, not PRIVMSG: RFC-correct for an automated reply, and it keeps
     two bots from ping-ponging auto-replies at each other.
 
-    An empty BOT_DM_REJECT disables the reply entirely (EliteWarez: "con me si
-    parla in canale" is a channel act, not a private rebound). The DM is still
-    dropped upstream — only the outbound rebound is suppressed."""
+    An empty BOT_DM_REJECT disables the reply entirely, for a bot that should
+    stay silent in private. The DM is still dropped upstream — only the
+    outbound rebound is suppressed."""
     if not DM_REJECT_MSG:
         return False
     n = nick.lower()
@@ -446,17 +437,17 @@ def dm_reject_once(nick):
     return True
 
 
-# Second half of the same gate (vjt 2026-09-15, after "ma quindi sei
-# promptinjectabile in pvt??"). Unlisted nicks are already dropped above, but a
-# LISTED nick whose WHOIS hasn't resolved yet used to reach the event stream
-# tagged UNTRUSTED — payload in context, only policy stopping it from being
-# obeyed. Policy is applied by a model; the gate is not. So the DM is now HELD
-# until the WHOIS answers: 307/330 releases it as TRUSTED, 318-without-307 drops
-# it. Holding rather than dropping outright is what keeps the FIRST DM from a
-# genuinely trusted nick (vjt's own, right after a reconnect) from vanishing.
-# Nothing is lost forensically: the raw line is in bot.log either way, and vjt
-# can order it read from there. Only plaintext is ever held: a nick with a
-# pinned key never waits for a WHOIS (e2e_bridge, its key replaces layer 1).
+# Second half of the same gate: a private prompt injection. Unlisted nicks are
+# already dropped above, but a LISTED nick whose WHOIS hasn't resolved yet would
+# reach the event stream tagged UNTRUSTED — payload in context, only policy
+# stopping it from being obeyed. Policy is applied by a model; the gate is not.
+# So the DM is HELD until the WHOIS answers: 307/330 releases it as TRUSTED,
+# 318-without-307 drops it. Holding rather than dropping outright is what keeps
+# the FIRST DM from a genuinely trusted nick (the operator's own, right after a
+# reconnect) from vanishing. Nothing is lost forensically: the raw line is in
+# bot.log either way, and the operator can have it read from there. Only
+# plaintext is ever held: a nick with a pinned key never waits for a WHOIS
+# (e2e_bridge, its key replaces layer 1).
 DM_HOLD_MAX = 5  # per nick, newest wins — a flood can't grow the queue
 dm_held: dict[str, list[tuple]] = {}  # nick_lower -> [(host, body, on_release)]
 
@@ -588,15 +579,17 @@ def split_say(target, text, origin=None):
 
 
 # !bolletta (alias !token, !usage): the Claude subscription usage, read from the
-# endpoint `/usage` in Claude Code calls. Undocumented, so the parse is
-# defensive. Trusted senders only (vjt, #grappa 2026-10-13). The OAuth token is
-# Claude Code's: re-read from disk on every call and NEVER refreshed here — a
+# endpoint Claude Code's `/usage` calls. OFF unless BOT_USAGE_CMDS=1: it reads
+# Claude Code's OAuth token from disk (BOT_USAGE_CREDS) and sends it to an
+# undocumented Anthropic endpoint, so the parse is defensive. Trusted senders
+# only. The token is re-read on every call and NEVER refreshed here — a
 # refresh from this side would rotate it under the live session.
+USAGE_ON = _cfg("BOT_USAGE_CMDS", "0") not in ("", "0", "no", "off", "false")
 USAGE_CMDS = ("!bolletta", "!token", "!usage")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_CREDS = _cfg("BOT_USAGE_CREDS", os.path.expanduser("~/.claude/.credentials.json"))
-USAGE_LABELS = {"session": "sessione 5h", "weekly_all": "settimana"}
-USAGE_DAYS = ("lun", "mar", "mer", "gio", "ven", "sab", "dom")
+USAGE_LABELS = {"session": "5h session", "weekly_all": "week"}
+USAGE_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 def _usage_reset(iso):
@@ -615,7 +608,7 @@ def usage_line():
         with open(USAGE_CREDS) as f:
             tok = json.load(f)["claudeAiOauth"]["accessToken"]
     except (OSError, ValueError, KeyError) as e:
-        return f"bolletta: credenziali illeggibili ({type(e).__name__})"
+        return f"usage: credentials unreadable ({type(e).__name__})"
     req = urllib.request.Request(USAGE_URL, headers={
         "Authorization": f"Bearer {tok}",
         "anthropic-beta": "oauth-2025-04-20",
@@ -624,9 +617,9 @@ def usage_line():
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.load(r)
     except urllib.error.HTTPError as e:
-        return f"bolletta: HTTP {e.code}"
+        return f"usage: HTTP {e.code}"
     except (OSError, ValueError) as e:
-        return f"bolletta: errore ({type(e).__name__})"
+        return f"usage: error ({type(e).__name__})"
     parts = []
     for lim in data.get("limits") or []:
         if not isinstance(lim, dict):
@@ -637,13 +630,13 @@ def usage_line():
             if not pct:
                 continue
             model = ((lim.get("scope") or {}).get("model") or {}).get("display_name") or "?"
-            label = f"settimana {model}"
+            label = f"week {model}"
         else:
             label = USAGE_LABELS.get(kind, kind)
         parts.append(f"{label} {pct}% (reset {_usage_reset(lim.get('resets_at'))})")
     if not parts:
-        return "bolletta: risposta senza limiti leggibili"
-    return "bolletta: " + " · ".join(parts)
+        return "usage: no readable limits in the reply"
+    return "usage: " + " · ".join(parts)
 
 
 def usage_reply(target):
@@ -673,39 +666,38 @@ def on_trusted_line(nick, target, body, own_nick):
     they follow the verdict the event line carries. An encrypted DM never
     comes here: the answer would go out in clear. `own_nick` is ours when
     the line was said: a confirmed one may come after we renamed."""
-    if bot_command(body, own_nick) in USAGE_CMDS:
+    if USAGE_ON and bot_command(body, own_nick) in USAGE_CMDS:
         reply_to = target if target.startswith(("#", "&")) else nick
         threading.Thread(target=usage_reply, args=(reply_to,), daemon=True).start()
 
 
-# DCC SEND. Serve a EliteWarez: il `!list` offre "warez", e prima o poi uno
-# prova a scaricarli. Un listener effimero sull'indirizzo da cui usciamo, il
-# CTCP con la porta, UNA connessione servita e chiuso.
+# DCC SEND: offer a file from DCC_DIR to a nick, typically for a sidecar. A
+# listener on the address we connect from, the CTCP with its port, ONE
+# connection served, then closed.
 #
-# Nasce solo IPv6 (ordine di vjt #sbiffo 2026-09-12 01:29, "va bene facciamolo
-# solo ipv6"), e sul campo si e' visto il prezzo: il DCC storico vuole l'IP come
-# intero decimale a 32 bit, e un client che il v6 in quel campo non lo digerisce
-# — HexChat, misurato con peluche il 14/09 — legge la stringa come numero e ne
-# cava 0.0.0.2, cioe' "No route to host". irssi e mIRC 7 invece il letterale v6
-# lo leggono, quindi il ramo v6 resta e non si tocca.
+# IPv6 by default, announced as the address literal. Classic DCC wants the
+# address as a 32-bit decimal integer, and a client that does not accept a v6
+# literal there (HexChat, for one) reads the string as a number, gets 0.0.0.2
+# and fails with "No route to host". irssi and mIRC 7 read the v6 literal, so
+# the v6 path stays.
 #
-# BOT_DCC_BIND4 accende il ramo v4 e ha la precedenza: si ascolta li' (nella
-# jail e' un privato di <jail_v4>) e si annuncia BOT_DCC_ADDR4, il pubblico
-# davanti alla rdr di pf, come intero a 32 bit. Ordine di vjt 2026-09-14 23:28
-# ("VA BENE IPV4", poi "ipv4 e basta"): cosi' prendono anche i client v4-only.
+# BOT_DCC_BIND4 turns on the v4 path and takes precedence: listen there (a
+# private address, behind NAT) and announce BOT_DCC_ADDR4 (the public address
+# in front of the port forward) as a 32-bit integer, which v4-only clients
+# accept too.
 #
-# La porta non puo' essere effimera: dietro un firewall la finestra va aperta
-# in anticipo, e non si apre quello che sceglie il kernel. BOT_DCC_PORT_MIN /
-# MAX danno un intervallo fisso da rispecchiare nella regola di pf; a zero (il
-# default) si torna alla porta effimera, buona solo dove non c'e' firewall.
+# Behind a firewall the port cannot be ephemeral: the hole has to be opened in
+# advance, and the kernel's pick cannot be. BOT_DCC_PORT_MIN / MAX give a fixed
+# range to mirror in the firewall rule; zero (the default) means an ephemeral
+# port, fine only where no firewall is in the way.
 DCC_DIR = _cfg("BOT_DCC_DIR", os.path.join(HERE, "dcc"))
 DCC_TIMEOUT = int(_cfg("BOT_DCC_TIMEOUT", "180"))
-# Quanto aspettiamo che il peer chiuda dopo l'ultimo byte, prima di mollare.
+# How long we wait for the peer to close after the last byte, before giving up.
 DCC_DRAIN_TIMEOUT = int(_cfg("BOT_DCC_DRAIN_TIMEOUT", "60"))
 DCC_PORT_MIN = int(_cfg("BOT_DCC_PORT_MIN", "0"))
 DCC_PORT_MAX = int(_cfg("BOT_DCC_PORT_MAX", "0"))
-# Ramo v4: indirizzo su cui ascoltare, e indirizzo da annunciare (uguale al
-# primo se non c'e' NAT davanti). Vuoto = si resta sul v6 di IRC_BIND.
+# v4 path: the address to listen on, and the one to announce (the same unless
+# NAT sits in front). Empty = stay on IRC_BIND's v6 address.
 DCC_BIND4 = _cfg("BOT_DCC_BIND4", "")
 DCC_ADDR4 = _cfg("BOT_DCC_ADDR4", "") or DCC_BIND4
 DCC_NAME_PAT = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
@@ -738,14 +730,13 @@ def _dcc_bind(srv, addr):
 def _dcc_drain(conn):
     """Half-close, read the peer's ACK stream to EOF, return the last ACK.
 
-    Un ricevente DCC risponde a ogni blocco con un ACK di 4 byte big-endian, il
-    totale ricevuto finora. Quegli ACK si accumulano nel nostro buffer di
-    ricezione, e chiudere un socket con dati non letti fa emettere al kernel un
-    RST invece del FIN: il peer perde tutto quello che era ancora in volo e si
-    ritrova un file mozzato mentre noi abbiamo gia' loggato DCC_DONE (vjt su
-    #sbiffo il 2026-09-14: "il transfer non completa" — misurato, 131072 byte su
-    246254 con un client lento). Mezza chiusura, si drena, e il close finale e'
-    un FIN pulito. L'ultimo ACK e' anche l'unica prova di consegna che abbiamo.
+    A DCC receiver answers every block with a 4-byte big-endian ACK, the total
+    received so far. Those ACKs pile up in our receive buffer, and closing a
+    socket with unread data makes the kernel send RST instead of FIN: the peer
+    loses whatever was still in flight and ends up with a truncated file while
+    we have already logged DCC_DONE (seen with a slow client: 131072 bytes of
+    246254). Half-close, drain, and the final close is a clean FIN. The last
+    ACK is also the only proof of delivery we have.
     """
     last = None
     try:
@@ -768,7 +759,7 @@ def _dcc_event(kind, *parts):
     """Emit a DCC lifecycle event on BOTH stdout and bot.log.
 
     stdout is the Monitor's stream; bot.log is what the sidecars tail. A
-    sidecar that wants to announce "nick ha ricevuto il file" only follows
+    sidecar that wants to announce "<nick> got the file" only follows
     bot.log (it is the PRIVMSG stream), so without this second write the
     completion would be invisible to it. Same trick as IDLE above.
     """
@@ -829,7 +820,7 @@ def dcc_send(nick, name, origin=None, offer=None):
         emit("CMD_ERROR", "dcc-no-bind", "IRC_BIND empty: no address, no offer")
         return
     if DCC_BIND4:
-        # Il campo indirizzo del DCC e' un intero a 32 bit, non una stringa.
+        # The DCC address field is a 32-bit integer, not a dotted string.
         try:
             advertise = str(int.from_bytes(socket.inet_aton(DCC_ADDR4), "big"))
         except OSError as e:
@@ -894,8 +885,8 @@ def _reclaim_after_ghost():
     # GHOST is near-instant but async; give services a beat to kill the ghost,
     # then reclaim the real nick. The server's echo of our own NICK change (in
     # handle_server_line) fires IDENTIFY. This is wording-agnostic on purpose,
-    # so we don't depend on the exact "has been ghosted" NOTICE text differing
-    # between Azzurra (suxserv) and Libera (atheme).
+    # so we don't depend on the exact "has been ghosted" NOTICE text, which
+    # differs between services packages (suxserv, atheme, ...).
     time.sleep(4)
     if ghost_needed:
         send_raw(f"NICK {NICK}")
@@ -928,9 +919,8 @@ def handle_server_line(line):
     nick = prefix.split("!")[0] if prefix else ""
     # Host from the source prefix (nick!user@host). Computed once so EVERY
     # emitted event can carry HOST= — the Monitor must never be host-blind on a
-    # JOIN/NICK the way it was when a *.diostronzo.org flooder spoofed nick
-    # `vjt_` and only the raw bot.log (not the event stream) revealed it wasn't
-    # vjt's trust host *.openssl.it (vjt 2026-07-02).
+    # JOIN/NICK: a nick that imitates a trusted one (`alice_` for `alice`) is
+    # told apart by its host, and without HOST= only the raw bot.log shows it.
     host = prefix.split("@", 1)[1] if prefix and "@" in prefix else ""
     rest = rest or ""
     if cmd in ("PRIVMSG", "NOTICE", "TOPIC") and " :" in rest:
@@ -1004,8 +994,9 @@ def handle_server_line(line):
             ghost_needed, ghost_tries = True, 0
             emit("NICK_FALLBACK", tmp_nick)
         elif ghost_needed and rest.split()[1:2] == [NICK]:
-            # Our reclaim beat the GHOST: Libera's services answered 6s after
-            # it on 2026-11-06, past the 4s beat. Try again, a few times.
+            # Our reclaim beat the GHOST: services can take longer than the 4s
+            # beat to answer it (6s has been seen on atheme). Try again, a few
+            # times.
             if ghost_tries < GHOST_RECLAIM_MAX:
                 ghost_tries += 1
                 _schedule_reclaim()
@@ -1067,6 +1058,8 @@ def handle_server_line(line):
         tgt = parts[0]
         msg = parts[1] if len(parts) > 1 else ""
         if nick.lower() == "nickserv" and NICKSERV_PASS:
+            # Services answer in their own language: the English and Italian
+            # wordings of success and failure.
             low = msg.lower()
             if any(k in low for k in ("identified", "accepted", "recognized", "riconosciuto", "autenticato", "accettata", "identificato")):
                 fire_startup("nickserv-ok")
@@ -1130,8 +1123,8 @@ def handle_server_line(line):
                 send_raw(f"NOTICE {nick} :\x01{ctcp}\x01")
             return
         if bridge:
-            # A nick with a pinned key: the key replaces layer 1 (vjt
-            # 2026-10-31). Its PM or a line addressed to the bot is challenged
+            # A nick with a pinned key: the key replaces layer 1. Its PM or a
+            # line addressed to the bot is challenged
             # whatever its host, bot.trust or services say, and anything else
             # in plain text is UNTRUSTED: a squatter, on any host, gets no
             # more than that. The DM gates below are layer 1's.
@@ -1146,7 +1139,7 @@ def handle_server_line(line):
                 return
         # Private message from a nick that isn't even trust-listed: drop it
         # here. No BODY is emitted — the whole point is that the payload never
-        # reaches the event stream (vjt 2026-08-03).
+        # reaches the event stream.
         is_dm = not target.startswith(("#", "&"))
         if is_dm and not is_trust_listed(nick) and dm_allowed(nick, host):
             emit("MSG", "UNTRUSTED", f"FROM={nick}", f"HOST={host}", f"TO={target}", f"BODY={body}")
@@ -1261,10 +1254,10 @@ def reader_loop():
         try:
             data = sock.recv(8192)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError) as e:
-            # Measured 2026-08-19 13:03: one BlockingIOError(11) killed the
-            # process and cost a full reconnect. Against 37 genuine
-            # TimeoutErrors in the same history — so the two must NOT share a
-            # handler. Timeout and reset still fall through and kill us.
+            # A single BlockingIOError(11) used to kill the process and cost a
+            # full reconnect, while genuine TimeoutErrors were far more common
+            # — so the two must NOT share a handler. Timeout and reset still
+            # fall through and kill us.
             retries += 1
             if retries > RECV_RETRY_MAX:
                 emit("ERROR", "recv-fail", f"{retries} consecutive {e!r}")
@@ -1355,9 +1348,8 @@ def outbound_ok(verb, rest, origin):
         target, text = rest.split(" ", 1)
     else:
         return True
-    # Services commands name the reserved channel by design (bot.startup's
-    # ChanServ INVITE for a reserved channel got eaten on the first restart,
-    # 2026-09-24).
+    # Services commands name the reserved channel by design: without this,
+    # bot.startup's ChanServ INVITE for a reserved channel would be blocked.
     if target.lower() in ("chanserv", "nickserv"):
         return True
     reason = leak_guard.check(target, text, dm_ok=is_trust_listed(target))
@@ -1499,10 +1491,16 @@ def e2e_ticker_loop():
 def check_config():
     """Fail fast, with a plain message on stderr, on configuration that has no
     default or does not parse. Called by main(), never at import."""
+    global _TZ
     missing = [k for k, v in (("IRC_HOST", HOST), ("IRC_NICK", NICK)) if not v]
     if missing:
         sys.exit(f"bot.py: {' and '.join(missing)} must be set in the environment "
                  "(see README, Configuration)")
+    if TZ_NAME:
+        try:
+            _TZ = ZoneInfo(TZ_NAME)
+        except (ZoneInfoNotFoundError, ValueError):
+            sys.exit(f"bot.py: BOT_TZ={TZ_NAME!r} is not a known time zone (e.g. Europe/Rome)")
     try:
         ranges = parse_idle(IDLE_SPEC)
     except ValueError as e:
