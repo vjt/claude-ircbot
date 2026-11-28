@@ -19,38 +19,5 @@
       "ExitPlanMode",
       "Skill"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /home/vjt/code/claude-tgbot/hooks/gate-permission.py $CLAUDE_PROJECT_DIR/var/tgbot"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /home/vjt/code/claude-tgbot/hooks/turn.py $CLAUDE_PROJECT_DIR/var/tgbot"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /home/vjt/code/claude-tgbot/hooks/turn.py $CLAUDE_PROJECT_DIR/var/tgbot"
-          }
-        ]
-      }
-    ]
   }
 }

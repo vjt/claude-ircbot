@@ -413,10 +413,18 @@ when it is not.
 
 ### Permission gate (Claude Code hook)
 
-`.claude/hooks/gate-permission.py` is a `PreToolUse` hook wired as
-`matcher: "*"` — every tool call the agent attempts passes through it.
+`.claude/hooks/gate-permission.py` is a `PreToolUse` hook: wire it as
+`matcher: "*"` in `.claude/settings.local.json` and every tool call the
+agent attempts passes through it. The tracked `.claude/settings.json`
+wires no hook, so a fresh clone works with Claude Code's own prompts:
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+  "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/gate-permission.py"}]}]}}
+```
+
 It reads the union of `permissions.allow` from `.claude/settings.json`
-(checked-in generic rules: bare-tool allows, hook wiring) and
+(checked-in generic rules: bare-tool allows) and
 `.claude/settings.local.json` (gitignored, host-specific: absolute
 `Edit`/`Write` path globs, `WebFetch` domains). If nothing matches, the
 hook denies.
@@ -461,9 +469,9 @@ enforcement point.
 An agent that also has a Telegram bridge can use
 [claude-tgbot](https://github.com/vjt/claude-tgbot)'s gate instead, same
 rules and grammar: the operator gets the blocked call as a DM with
-buttons (yes / always / no) and the gate waits for the tap. This repo's
-`.claude/settings.json` wires that one; point `PreToolUse` back at
-`.claude/hooks/gate-permission.py` for IRC notices.
+buttons (yes / always / no) and the gate waits for the tap: wire its
+`hooks/gate-permission.py` in `settings.local.json` instead of this one
+(hooks from all settings files run, so wire one gate, not both).
 
 ### Idle tick
 
