@@ -1,1 +1,0 @@
-/home/vjt/code/pavarotti/skill/SKILL.md

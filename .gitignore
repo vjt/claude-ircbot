@@ -1,57 +1,22 @@
-bot.log
-bot.send
+# Runtime of each bot instance: the default one and any `.<name>` twin
+# (a second network = same bot.py, its own env, FIFO, startup and logs).
 .env
+.env.*
+bot.send
+bot.send.*
 bot.startup
-bot.stdout.log
-
-# Trust lists are per-deployment (who YOU trust, on YOUR hosts): untracked.
-# Format and an example live in README.
-bot.trust
-bot.trust.libera
-bot.dmallow*
-
-# Libera.Chat instance runtime (2nd bot: same code, own nick/FIFO/logs/env).
-.env.libera
-bot.send.libera
-bot.startup.libera
-bot.libera.log
-bot.libera.stdout.log
-
-# IRCnet instance runtime (3rd bot).
-.env.ircnet
-bot.send.ircnet
-bot.startup.ircnet
-bot.ircnet.log
-bot.ircnet.stdout.log
-
+bot.startup.*
+bot.log
+bot.*.log
 aup_watchdog.log
 scrub.log
-__pycache__/
-*.pyc
 
-# Raw source PNGs from Gemini — only compressed JPEGs under docs/img/ are committed
-docs/img/*.png
-
-# Private — channel-specific memory, not for public repo
-memory/
-
-# Host-specific Claude Code settings (paths, WebFetch domains)
-.claude/settings.local.json
-
-# Reference material (private copies of Azzurra helpers docs, etc.)
-refs/
-
-# Scratch / transient workspace crud — dump here, gitignored wholesale
-tmp/
-# Runtime state (tg poller, orch-send log, watchers) and kept scratch
-var/
-archive/
-*.lock
-
-# Host-local automation helpers (cron scripts + their logs) — not for public repo
-tools/
-
-# Leak guard store: recent lines of the reserved channels (confidential)
+# Who the bot trusts, whose DMs pass, which channels are reserved: per deployment.
+# Formats in README; templates are *.example.
+bot.trust
+bot.trust.*
+bot.dmallow*
+bot.reserved
 reserved_recent.tsv
 reserved_recent.tsv.tmp
 
@@ -65,15 +30,28 @@ reserved_recent.tsv.tmp
 bot.e2e*
 .bot.e2e*
 
-
-# Deployment config — local only, never in the repo (templates: *.example).
+# Deployment config, never in the repo (templates: *.example).
 CLAUDE.md
-bot.reserved
-bot.trust.*
-roll_counter.py
 systemd/*.service
 systemd/*.timer
+.claude/settings.local.json
 .claude/gate.local.json
-
-# watchd watches are per deployment (instances, extra feeds): untracked.
 .claude/watchd.json
+
+# The skills that run YOUR deployment: copy examples/skills/ here and make them yours.
+.claude/skills/start/
+.claude/skills/resume/
+.claude/skills/close/
+.claude/skills/voice/
+
+# The agent's memory, notes, scratch and local helpers.
+memory/
+tmp/
+var/
+tools/
+scratchpad/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.lock
+docs/img/*.png

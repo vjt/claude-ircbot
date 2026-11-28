@@ -21,11 +21,11 @@ using the `Bash` permission the session already grants. `settings-add.sh` is tha
 ## When to use
 
 - You need to add a permission rule (allow/deny/ask) to a settings file and don't want the
-  interactive prompt — e.g. persisting a `vjt-claude: allow <rule>` self-grant, or adding a
+  interactive prompt — e.g. persisting a `<bot nick>: allow <rule>` self-grant, or adding a
   new host path / WebFetch domain.
 - Do **NOT** reach for it for arbitrary settings surgery — it only appends to the
   `permissions.{allow,deny,ask}` arrays. Structural edits (hooks, env, model) still go
-  through a reviewed Edit (and vjt approval, per [[feedback_bot_code_approval]] for
+  through a reviewed Edit (and the operator's approval, for
   hook/systemd/skill changes).
 
 ## Usage
@@ -50,6 +50,5 @@ using the `Bash` permission the session already grants. `settings-add.sh` is tha
 - Default target is `.claude/settings.local.json` (host-specific, gitignored) — the right
   place for host paths / WebFetch domains that shouldn't be committed.
 
-Script lives at repo root: `settings-add.sh`. Related: the permission gate
-[[project_permission_gate]] (`vjt-claude: allow <rule>` on IRC) can call this to persist a
-grant without a prompt.
+Script lives at repo root: `settings-add.sh`. The permission gate (`<bot nick>: allow <rule>` on IRC,
+README "Permission gate") can call it to persist a grant without a prompt.
