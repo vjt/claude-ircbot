@@ -2,16 +2,16 @@
 # bot.say — safe writer to the IRC bot FIFO (bot.send).
 #
 # The message body is read from STDIN, so apostrophes, accents, `%`, `$` and
-# friends NEVER pass through shell quoting — the footgun that made me strip
-# them by hand. See memory feedback_fifo_heredoc_utf8.
+# friends NEVER pass through shell quoting, where they would otherwise have
+# to be escaped or stripped by hand.
 #
 # Usage:
 #   bot.say '#chan' <<'EOF'
-#   messaggio con è, à, l'apostrofo: tutto intero
+#   accents (è, à), apostrophes (it's) and 100% arrive intact
 #   EOF
 #
 #   bot.say -v ACT '#chan' <<'EOF'      # /me action  (ACT/NOTICE/…)
-#   fa qualcosa
+#   waves
 #   EOF
 #
 # Only the target (and optional -v verb) are shell args — both simple tokens.
@@ -30,7 +30,7 @@ while [[ "${1:-}" == -* ]]; do
     *)  echo "bot.say: unknown flag $1" >&2; exit 2 ;;
   esac
 done
-target="${1:?bot.say: missing target (e.g. #sniffo or a nick)}"
+target="${1:?bot.say: missing target (e.g. #chan or a nick)}"
 
 sent=0
 {

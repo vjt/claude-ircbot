@@ -1,9 +1,8 @@
 """Outbound leak guard: what is said in a reserved channel stays there.
 
-Asked for 2026-09-23, green light from vjt 2026-09-24 14:17. The rule already
-lived in the session's standing orders and was broken three times anyway;
-this is the mechanical half, in the one place every outbound line passes
-through.
+The rule can live in the session's standing orders, and a model will still
+break it now and then; this is the mechanical half, in the one place every
+outbound line passes through.
 
 Two checks, both run on every PRIVMSG/NOTICE the FIFO asks us to send to a
 target that is not the reserved channel itself:
@@ -24,7 +23,7 @@ lists the channels, and the instance that sits in one appends what it hears to
 a shared store the others read on every check. `bot.reserved` is per
 deployment and untracked (a reserved channel's name is itself reserved);
 `bot.reserved.example` shows the format.
-DMs to trust-listed nicks pass: "gliela si dice la' dov'e' nata o in query".
+DMs to trust-listed nicks pass: telling a trusted user in private is allowed.
 """
 
 import os
@@ -44,8 +43,8 @@ _FORMAT = re.compile(r"\x03(\d{1,2}(,\d{1,2})?)?|[\x02\x0f\x16\x1d\x1f]")
 
 
 # A URL is one token, not the 6+ words its host and path split into: two links
-# to the same repo share "github com vjt grappa irc issues", and on 2026-11-09
-# one issue link said in a reserved channel blocked every other for 24h.
+# to the same repo share "github com <owner> <repo name> issues", and one issue
+# link said in a reserved channel would block every other for 24h.
 # Bare `host.tld/path` too, the way links get typed on IRC.
 _URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+|(?:[\w-]+\.)+[a-z]{2,}/\S*", re.IGNORECASE)
 _URL_TAIL = ".,;:!?)]}>\"'»"

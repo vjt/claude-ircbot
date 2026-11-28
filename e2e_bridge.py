@@ -5,36 +5,35 @@ The crypto, framing and pacing live in the shared irc-olm package
 maps it onto bot.py: what reaches the event stream, under which trust verdict,
 and when an order needs a CHAL first.
 
-Keys are PINNED, never learned (vjt's final ruling, 2026-10-18): the operator
-pastes each peer's master key into the pins file (BOT_E2E_PINS, one
-`<nick> <key>` per line) and the bot talks E2E only to those keys. Wire v2
-(grappa-irc 2430) gives every user one master Ed25519 key per network, which
-vouches for the user's devices (1 to 4): one pin covers all of them, and
-irc-olm sends each message to every device the master trusts. An unknown
-key gets silence. There is no SAS and no confirm command on a bot; rotating a
-key means re-pasting it, and the file is reloaded when it changes. The bot
-only READS the pins file: the operator makes it root-owned (or denies it to
-the bot's Claude session), and the bot says so (E2E_PINS_WRITABLE) when it
-could write it.
+Keys are PINNED, never learned: the operator pastes each peer's master key
+into the pins file (BOT_E2E_PINS, one `<nick> <key>` per line) and the bot
+talks E2E only to those keys. Wire v2 (grappa-irc 2430) gives every user one
+master Ed25519 key per network, which vouches for the user's devices (1 to
+4): one pin covers all of them, and irc-olm sends each message to every
+device the master trusts. An unknown key gets silence. There is no SAS and
+no confirm command on a bot; rotating a key means re-pasting it, and the file
+is reloaded when it changes. The bot only READS the pins file: the operator
+makes it root-owned (or denies it to the bot's Claude session), and the bot
+says so (E2E_PINS_WRITABLE) when it could write it.
 
 Trust is one of two rules, picked by whether the nick has a pinned key:
 
   * Without one, layer 1, exactly as before: the nick is in bot.trust, the
     host matches its glob, and 307/330 says it is identified.
-  * With one, the key REPLACES layer 1 (vjt 2026-10-31): the host, bot.trust
-    and services count for nothing either way, so a pinned user is trusted on
-    a network without services (IRCnet) and a squatter on the nick is not,
-    whatever its host. In the encrypted query the session authenticates the
-    key. Outside it, a line addressed to the bot (its nick as a word) or a
-    plaintext PM is held, a CHAL goes out over the session, and the line is
-    released as TRUSTED only on a matching ACK within 15 s. Anything else from
-    that nick in plain text is UNTRUSTED (no downgrade).
+  * With one, the key REPLACES layer 1: the host, bot.trust and services
+    count for nothing either way, so a pinned user is trusted on a network
+    without services and a squatter on the nick is not, whatever its host.
+    In the encrypted query the session authenticates the key. Outside it, a
+    line addressed to the bot (its nick as a word) or a plaintext PM is held,
+    a CHAL goes out over the session, and the line is released as TRUSTED
+    only on a matching ACK within 15 s. Anything else from that nick in plain
+    text is UNTRUSTED (no downgrade).
   * A different key on a pinned nick is an alarm (E2E_KEY_ALARM), and what it
     says never reaches the stream. So is a pinned key speaking under a nick
     pinned to another key.
 
-Log hygiene: decrypted text appears ONLY as the BODY of the MSG event on stdout
-(ruling 7). bot.log gets the ciphertext lines plus `E2E MSG from X (n bytes)`.
+Log hygiene: decrypted text appears ONLY as the BODY of the MSG event on
+stdout. bot.log gets the ciphertext lines plus `E2E MSG from X (n bytes)`.
 """
 
 from __future__ import annotations

@@ -42,8 +42,8 @@ class GhostTest(unittest.TestCase):
         bot.handle_server_line(f":srv 001 {bot.tmp_nick} :Welcome")
 
     def test_a_reclaim_that_beats_the_ghost_is_tried_again(self):
-        # Libera 2026-11-06: services answered the GHOST 6s later, the reclaim
-        # went at 4s and got 433, and nothing ever retried.
+        # Services can answer the GHOST after the 4s beat: the reclaim gets
+        # 433, and must be tried again.
         bot.SASL = True
         self.connect_into_our_ghost()
         self.assertIn(f"PRIVMSG NickServ :GHOST {bot.NICK} pw", self.sent)
