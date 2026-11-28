@@ -17,10 +17,24 @@ If you keep a dated activity log (e.g. `memory/project_activity_log.md`, one `##
 heading per day): add today's heading if missing, then read today's body in full. It is the only
 way in-flight threads and pending items survive a `/clear`.
 
-## 2. Event streams: adopt or attach
+## 2. Event streams
 
-Each bot instance writes its own `bot.stdout.log` (`bot.<name>.stdout.log` for a twin); each needs
-one Monitor. A `tail -F` pipeline survives `/clear`, the Monitor registration does not:
+**With watchd (recommended).** The [watchd](https://github.com/vjt/claude-watchd) plugin runs every
+watch in `.claude/watchd.json` for the session's whole life: no 30-minute cap to re-arm, events wake an
+idle session and reach a busy one between tool calls, and nothing to re-attach after `/clear`. Install
+it once (`/plugin install watchd --marketplace vjt/claude-watchd`), copy `examples/watchd.json` to
+`.claude/watchd.json` (one watch per bot instance). Here, only check it is up:
+
+```bash
+grep -lsxzF "WATCHD_DIR=$PWD" /proc/[0-9]*/environ | wc -l    # > 0: watchd owns the streams
+systemctl --user is-active claude-ircbot.service
+```
+
+If it is up, skip the rest of this section.
+
+**Without watchd: Monitors.** Each bot instance writes its own `bot.stdout.log`
+(`bot.<name>.stdout.log` for a twin) and needs one Monitor. A `tail -F` pipeline survives `/clear`,
+the Monitor registration does not:
 
 ```bash
 pgrep -af "tail -F.*bot.stdout.log"
@@ -33,9 +47,6 @@ pgrep -af "tail -F.*bot.stdout.log"
            persistent: true, timeout_ms: 3600000
            description: "IRC bot events"
   ```
-
-If you run the claude-watchd plugin with these watches in `.claude/watchd.json`, it owns the
-streams for the session's whole life: check it is running and skip this section.
 
 ## 3. Work in flight
 

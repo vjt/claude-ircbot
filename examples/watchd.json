@@ -1,0 +1,8 @@
+{
+  "watches": [
+    {
+      "name": "irc",
+      "argv": ["bash", "examples/start-monitor.sh", "bot.stdout.log"]
+    }
+  ]
+}
