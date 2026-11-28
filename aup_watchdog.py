@@ -18,7 +18,9 @@ running `claude` in window `ircbot` (resolved session-agnostic via
        systemctl --user kill -s SIGUSR1 aup-watchdog.service
 
 All triggers share the same cooldown window, so back-to-back clears
-never stack. Nothing here runs claude itself — it only kicks the pane.
+never stack, and none fires again until the /clear shows up as a new
+transcript (or CLEAR_LOST_SEC passes without one). Nothing here runs
+claude itself — it only kicks the pane.
 
 One instance per session. The defaults fit a session started in this repo
 talking through its bot.send; a second session (2026-11-08) runs its own
@@ -67,6 +69,13 @@ LABEL = _env("WATCHDOG_LABEL", "watchdog")  # prefix of every IRC line it sends
 GRANT_AS = _env("WATCHDOG_GRANT_AS")
 
 POLL_SEC = 2
+# A /clear typed during a turn waits in Claude Code's queue until the turn ends,
+# and the turn keeps writing to the old transcript meanwhile: read as the same
+# session still over budget, it fired a second warning + /clear 61 s after the
+# first, onto the fresh session's /resume (2026-11-28 02:30, vjt: «il watchdog
+# se non vede agente cleared rimanda»). Once fired, wait for the new transcript;
+# only a clear unseen this long counts as lost and re-arms the triggers.
+CLEAR_LOST_SEC = 1800
 DEBOUNCE_SEC = 60           # any clear — AUP / idle / context — holds this window
                             # (must be ≥ PRE_CLEAR_WARN_SEC + POST_CLEAR_WAIT + buffer)
 IDLE_ENABLED = True         # idle trigger re-enabled 2026-06-28 per vjt (was disabled
@@ -477,6 +486,7 @@ def main() -> int:
         grant_read(current_file)
         log(f"tailing {current_file.name} from offset {current_pos} (skipping history)")
     last_fire = 0.0
+    cleared_at = 0.0  # last /clear not yet seen as a new transcript
     turns_since_clear = 0
     ctx_tokens = 0
 
@@ -489,6 +499,7 @@ def main() -> int:
                 grant_read(current_file)
                 current_pos = 0
                 log(f"tailing {current_file.name} (new session)")
+                cleared_at = 0.0
                 turns_since_clear = 0
                 ctx_tokens = 0
             if current_file is None:
@@ -503,6 +514,9 @@ def main() -> int:
 
             now = time.time()
             fired_this_tick = False
+            if cleared_at and now - cleared_at >= CLEAR_LOST_SEC:
+                log(f"/clear not followed by a new transcript in {CLEAR_LOST_SEC}s — re-arming")
+                cleared_at = 0.0
 
             # --- Manual trigger: SIGUSR1 forces a /clear + scrub now ---
             # Bypasses debounce and AUP/context/idle logic — for testing the
@@ -511,7 +525,7 @@ def main() -> int:
             if _manual_fire:
                 _manual_fire = False
                 if fire_clear("MANUAL SIGUSR1"):
-                    last_fire = now
+                    last_fire = cleared_at = now
                     turns_since_clear = 0
                     fired_this_tick = True
 
@@ -522,13 +536,15 @@ def main() -> int:
                     if line_is_assistant_turn(line):
                         turns_since_clear += 1
                         ctx_tokens = line_ctx_tokens(line) or ctx_tokens
+                    if cleared_at:  # the /clear already sent has not landed yet
+                        continue
                     refusal = line_matches_refusal(line)
                     if refusal:
                         if now - last_fire < DEBOUNCE_SEC:
                             log(f"refusal {refusal} (debounced, skipping)")
                             break
                         if fire_clear(f"REFUSAL {refusal}", warn=False, announce=True):
-                            last_fire = now
+                            last_fire = cleared_at = now
                             turns_since_clear = 0
                             fired_this_tick = True
                         break
@@ -537,19 +553,19 @@ def main() -> int:
                             log("AUP match (debounced, skipping)")
                             break
                         if fire_clear("AUP STUCK DETECTED", announce=True):
-                            last_fire = now
+                            last_fire = cleared_at = now
                             turns_since_clear = 0
                             fired_this_tick = True
                         break
 
             # --- Context trigger: the last reply saw MAX_CTX_TOKENS or more ---
-            if not fired_this_tick and ctx_tokens >= MAX_CTX_TOKENS:
+            if not fired_this_tick and not cleared_at and ctx_tokens >= MAX_CTX_TOKENS:
                 if now - last_fire < DEBOUNCE_SEC:
                     pass  # wait out debounce, fire next tick
                 elif has_pending_tool_use(tail_lines(current_file)):
                     log(f"context {ctx_tokens} but pending tool_use — skipping")
                 elif fire_clear(f"CTX {ctx_tokens}"):
-                    last_fire = now
+                    last_fire = cleared_at = now
                     turns_since_clear = 0
                     ctx_tokens = 0
                     fired_this_tick = True
@@ -560,7 +576,7 @@ def main() -> int:
             # waiting for their next IRC message. The bootstrap skill alone
             # produces ~10-20 assistant turns; demand real ongoing work
             # before IDLE is allowed to fire.
-            if IDLE_ENABLED and not fired_this_tick:
+            if IDLE_ENABLED and not fired_this_tick and not cleared_at:
                 age = now - current_file.stat().st_mtime
                 boot_age = now - boot_ts
                 if (
@@ -572,7 +588,7 @@ def main() -> int:
                     if has_pending_tool_use(tail_lines(current_file)):
                         log(f"idle {int(age)}s but pending tool_use — skipping")
                     elif fire_clear(f"IDLE {int(age)}s"):
-                        last_fire = now
+                        last_fire = cleared_at = now
                         turns_since_clear = 0
 
             time.sleep(POLL_SEC)
